@@ -37,6 +37,8 @@ into native Wayland and Electron applications.
 
 ## Later
 
+- Score multiple PipeWire input devices by clipping and speech-to-noise ratio,
+  then select the clearest source instead of blindly mixing unrelated devices
 - Model/config selection without a runtime downloader
 - Latency, CPU, wakeup, memory, and package-power benchmarks
 - Optional XDNA2 backend only if measurements beat the CPU experience
