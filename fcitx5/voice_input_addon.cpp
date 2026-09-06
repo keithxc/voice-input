@@ -13,7 +13,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <string>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -29,8 +31,14 @@ class VoiceInputAddon final : public AddonInstance {
 public:
     explicit VoiceInputAddon(Instance *instance) : instance_(instance) {
         dispatcher_.attach(&instance_->eventLoop());
+        if (!prepareSocket()) {
+            FCITX_LOGC(voiceInputLog, Warn)
+                << "Another voice-input addon owns the output socket; "
+                   "leaving this duplicate instance inactive";
+            return;
+        }
         running_ = true;
-        thread_ = std::thread([this] { listenLoop(); });
+        thread_ = std::thread([this] { listenLoop(server_); });
     }
 
     ~VoiceInputAddon() override {
@@ -38,10 +46,12 @@ public:
         if (server_ >= 0) {
             shutdown(server_, SHUT_RDWR);
             close(server_);
-            server_ = -1;
         }
         if (thread_.joinable()) thread_.join();
-        unlink(socketPath().c_str());
+        if (lock_ >= 0) {
+            unlink(socketPath().c_str());
+            close(lock_);
+        }
         dispatcher_.detach();
     }
 
@@ -99,27 +109,43 @@ private:
         (void)send(client, &acknowledgment, 1, MSG_NOSIGNAL);
     }
 
-    void listenLoop() {
+    bool prepareSocket() {
         const std::string path = socketPath();
         const size_t slash = path.rfind('/');
         if (slash != std::string::npos) {
             const std::string directory = path.substr(0, slash);
-            if (mkdir(directory.c_str(), 0700) < 0 && errno != EEXIST) return;
+            if (mkdir(directory.c_str(), 0700) < 0 && errno != EEXIST) return false;
         }
+
+        const std::string lockPath = path + ".lock";
+        lock_ = open(lockPath.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+        if (lock_ < 0 || flock(lock_, LOCK_EX | LOCK_NB) < 0) {
+            if (lock_ >= 0) close(lock_);
+            lock_ = -1;
+            return false;
+        }
+
+        // Only the process holding the lock may replace the socket path. This
+        // prevents a short-lived duplicate Fcitx process from unlinking the
+        // healthy instance's output endpoint during a desktop reconfiguration.
         unlink(path.c_str());
         server_ = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (server_ < 0) return;
+        if (server_ < 0) return false;
         sockaddr_un address{};
         address.sun_family = AF_UNIX;
-        if (path.size() >= sizeof(address.sun_path)) return;
+        if (path.size() >= sizeof(address.sun_path)) return false;
         memcpy(address.sun_path, path.c_str(), path.size() + 1);
         if (bind(server_, reinterpret_cast<const sockaddr *>(&address),
                  sizeof(address)) < 0 ||
             chmod(path.c_str(), 0600) < 0 || listen(server_, 4) < 0) {
-            return;
+            return false;
         }
+        return true;
+    }
+
+    void listenLoop(int server) {
         while (running_) {
-            int client = accept4(server_, nullptr, nullptr, SOCK_CLOEXEC);
+            int client = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
             if (client < 0) {
                 if (errno == EINTR) continue;
                 break;
@@ -134,6 +160,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     int server_{-1};
+    int lock_{-1};
 };
 
 class VoiceInputAddonFactory final : public AddonFactory {
