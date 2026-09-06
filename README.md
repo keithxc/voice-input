@@ -8,19 +8,21 @@ domain socket protocol, sherpa-onnx streaming recognition, and a thin Qt/QML
 overlay. Fcitx5 is the preferred text commit path; libei and clipboard paste are
 fallbacks.
 
-## Status: v0.1 audio and control foundation
+## Status: v0.1 usable CLI and Fcitx5 input path
 
-The first runnable milestone includes:
+The first usable milestone includes:
 
 - a persistent C17 daemon with zero audio processing while idle;
 - native PipeWire capture at 16 kHz, mono, signed 16-bit PCM;
 - a local Unix socket command/event protocol;
 - start, stop, toggle, status, monitor, and clean shutdown commands;
 - throttled real-time RMS level events for the future overlay;
+- sherpa-onnx streaming Zipformer recognition for Chinese and English;
+- partial/final transcript events and endpoint detection;
+- a native Fcitx5 addon that commits final text to the focused application;
 - a systemd user service, Nix package, and automated tests.
 
-Streaming ASR, the Qt/QML overlay, and Fcitx5 text commit are the next milestone.
-No placeholder transcript is emitted in v0.1.
+The Qt/QML overlay is the next milestone. No placeholder transcript is emitted.
 
 ## Build
 
@@ -39,19 +41,20 @@ ctest --test-dir build --output-on-failure
 
 ## Run
 
-Start the daemon in one terminal:
+Start the packaged daemon in one terminal. The Nix wrapper selects the pinned
+model automatically:
 
 ```sh
-./build/voice-inputd
+./result/bin/voice-inputd
 ```
 
 Control it from another terminal:
 
 ```sh
-./build/voice-inputctl status
-./build/voice-inputctl start
-./build/voice-inputctl monitor
-./build/voice-inputctl stop
+./result/bin/voice-inputctl status
+./result/bin/voice-inputctl start
+./result/bin/voice-inputctl monitor
+./result/bin/voice-inputctl stop
 ```
 
 The default socket is
@@ -76,9 +79,9 @@ global shortcut / CLI
           v
      voice-inputd (C17)
           |
-          +---- PipeWire native capture (v0.1)
-          +---- sherpa-onnx streaming ASR (next)
-          +---- Fcitx5 text commit (next)
+          +---- PipeWire native capture
+          +---- sherpa-onnx streaming ASR
+          +---- Fcitx5 text commit
 ```
 
 See [`SPEC.md`](SPEC.md) for the implementation constraints and reference
@@ -88,6 +91,12 @@ projects supplied for the project.
 
 Audio is processed locally. The project does not contain employer source code,
 proprietary SDKs, private logs, customer data, or confidential configuration.
+
+The default model is the official sherpa-onnx bilingual Chinese/English
+streaming Zipformer. Nix downloads it from the upstream release with a pinned
+SHA-256 hash and extracts only the INT8 encoder/joiner, decoder, tokens, and a
+test fixture. sherpa-onnx is Apache-2.0 licensed; consult the upstream model
+documentation for model and training-data terms.
 
 ## License
 

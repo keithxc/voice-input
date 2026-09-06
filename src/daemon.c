@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "audio.h"
+#include "asr.h"
 #include "protocol.h"
+#include "output.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -22,6 +24,7 @@ struct app {
     int server_fd;
     int clients[MAX_CLIENTS];
     struct vi_audio *audio;
+    struct vi_asr *asr;
     bool no_audio;
     bool recording;
     bool running;
@@ -102,7 +105,7 @@ static const char *current_audio_state(const struct app *app) {
 static void broadcast_state(struct app *app, const char *event) {
     char message[256];
     vi_json_state(message, sizeof(message), event, app->recording,
-                  current_audio_state(app));
+                  current_audio_state(app), vi_asr_state(app->asr));
     broadcast(app, message);
 }
 
@@ -115,7 +118,10 @@ static int set_recording(struct app *app, bool recording) {
         broadcast(app, "{\"event\":\"error\",\"message\":\"pipewire-start-failed\"}\n");
         return -1;
     }
-    if (!recording && !app->no_audio) vi_audio_stop(app->audio);
+    if (!recording && !app->no_audio) {
+        vi_audio_stop(app->audio);
+        vi_asr_finish(app->asr);
+    }
     app->recording = recording;
     broadcast_state(app, "state");
     return 0;
@@ -166,7 +172,7 @@ static void accept_clients(struct app *app) {
         app->clients[slot] = client;
         char hello[256];
         vi_json_state(hello, sizeof(hello), "hello", app->recording,
-                      current_audio_state(app));
+                      current_audio_state(app), vi_asr_state(app->asr));
         send_to_client(app, slot, hello);
     }
 }
@@ -196,6 +202,26 @@ static void on_level(float rms, void *userdata) {
     app->pending_level = rms;
 }
 
+static void on_transcript(const char *event, const char *text, void *userdata) {
+    struct app *app = userdata;
+    char message[8192];
+    if (vi_json_text(message, sizeof(message), event, text) >= 0) {
+        broadcast(app, message);
+    }
+    if (strcmp(event, "final") == 0 && vi_output_commit(text) < 0) {
+        broadcast(app, "{\"event\":\"output-error\",\"backend\":\"fcitx5\"}\n");
+    }
+}
+
+static void process_audio(struct app *app) {
+    if (!app->recording || app->asr == NULL) return;
+    float samples[4096];
+    size_t count;
+    while ((count = vi_audio_read(app->audio, samples, 4096)) > 0) {
+        (void)vi_asr_accept(app->asr, samples, count);
+    }
+}
+
 static void maybe_broadcast_level(struct app *app) {
     if (!app->recording || app->pending_level < 0.0F) return;
     struct timespec now;
@@ -212,7 +238,8 @@ static void maybe_broadcast_level(struct app *app) {
 }
 
 static void usage(FILE *stream) {
-    fprintf(stream, "Usage: voice-inputd [--socket PATH] [--no-audio] [--version]\n");
+    fprintf(stream, "Usage: voice-inputd [--socket PATH] [--model DIR] "
+                    "[--threads N] [--no-audio] [--version]\n");
 }
 
 int main(int argc, char **argv) {
@@ -222,12 +249,19 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     bool no_audio = false;
+    const char *model_directory = getenv("VOICE_INPUT_MODEL_DIR");
+    int asr_threads = 2;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             if (strlen(argv[++i]) >= sizeof(socket_path)) return EXIT_FAILURE;
             strcpy(socket_path, argv[i]);
         } else if (strcmp(argv[i], "--no-audio") == 0) {
             no_audio = true;
+        } else if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
+            model_directory = argv[++i];
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            asr_threads = atoi(argv[++i]);
+            if (asr_threads < 1 || asr_threads > 32) return EXIT_FAILURE;
         } else if (strcmp(argv[i], "--version") == 0) {
             puts("voice-inputd " VOICE_INPUT_VERSION);
             return EXIT_SUCCESS;
@@ -237,7 +271,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    struct app app = { .server_fd = -1, .audio = NULL, .no_audio = no_audio,
+    struct app app = { .server_fd = -1, .audio = NULL, .asr = NULL,
+                       .no_audio = no_audio,
                        .recording = false, .running = true, .pending_level = -1.0F };
     for (size_t i = 0; i < MAX_CLIENTS; ++i) app.clients[i] = -1;
     if (!no_audio) {
@@ -246,11 +281,24 @@ int main(int argc, char **argv) {
             fputs("voice-inputd: failed to initialize PipeWire\n", stderr);
             return EXIT_FAILURE;
         }
+        if (model_directory != NULL && model_directory[0] != '\0') {
+            app.asr = vi_asr_create(model_directory, asr_threads,
+                                    on_transcript, &app);
+            if (app.asr == NULL) {
+                fprintf(stderr, "voice-inputd: failed to load ASR model from %s\n",
+                        model_directory);
+                vi_audio_destroy(app.audio);
+                return EXIT_FAILURE;
+            }
+            fprintf(stderr, "voice-inputd: ASR model loaded from %s\n",
+                    model_directory);
+        }
     }
     app.server_fd = create_server(socket_path);
     if (app.server_fd < 0) {
         perror("voice-inputd: create socket");
         vi_audio_destroy(app.audio);
+        vi_asr_destroy(app.asr);
         return EXIT_FAILURE;
     }
     signal(SIGINT, on_signal);
@@ -265,6 +313,7 @@ int main(int argc, char **argv) {
             const struct timespec delay = { .tv_sec = 0, .tv_nsec = 10000000L };
             nanosleep(&delay, NULL);
         }
+        process_audio(&app);
         maybe_broadcast_level(&app);
     }
 
@@ -275,5 +324,6 @@ int main(int argc, char **argv) {
     close(app.server_fd);
     unlink(socket_path);
     vi_audio_destroy(app.audio);
+    vi_asr_destroy(app.asr);
     return EXIT_SUCCESS;
 }

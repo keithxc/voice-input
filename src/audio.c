@@ -8,6 +8,7 @@
 #include <spa/param/audio/raw.h>
 #include <spa/param/format-utils.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -19,6 +20,9 @@ struct vi_audio {
     void *userdata;
     bool active;
     const char *state;
+    float samples[65536];
+    atomic_size_t read_index;
+    atomic_size_t write_index;
 };
 
 static void on_stream_state_changed(void *data, enum pw_stream_state old,
@@ -47,10 +51,19 @@ static void on_stream_process(void *data) {
         const int16_t *samples = (const int16_t *)((const uint8_t *)spa_data->data + offset);
         const size_t count = bytes / sizeof(*samples);
         double squares = 0.0;
+        size_t write_index = atomic_load_explicit(&audio->write_index,
+                                                  memory_order_relaxed);
+        const size_t read_index = atomic_load_explicit(&audio->read_index,
+                                                       memory_order_acquire);
         for (size_t i = 0; i < count; ++i) {
             const double normalized = (double)samples[i] / 32768.0;
             squares += normalized * normalized;
+            const size_t next = (write_index + 1U) % 65536U;
+            if (next == read_index) break;
+            audio->samples[write_index] = (float)normalized;
+            write_index = next;
         }
+        atomic_store_explicit(&audio->write_index, write_index, memory_order_release);
         if (count > 0 && audio->callback != NULL) {
             audio->callback((float)sqrt(squares / (double)count), audio->userdata);
         }
@@ -138,6 +151,20 @@ int vi_audio_start(struct vi_audio *audio) {
 int vi_audio_iterate(struct vi_audio *audio, int timeout_ms) {
     if (audio == NULL) return -1;
     return pw_loop_iterate(pw_main_loop_get_loop(audio->loop), timeout_ms);
+}
+
+size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity) {
+    if (audio == NULL || samples == NULL) return 0;
+    size_t read_index = atomic_load_explicit(&audio->read_index, memory_order_relaxed);
+    const size_t write_index = atomic_load_explicit(&audio->write_index,
+                                                    memory_order_acquire);
+    size_t count = 0;
+    while (read_index != write_index && count < capacity) {
+        samples[count++] = audio->samples[read_index];
+        read_index = (read_index + 1U) % 65536U;
+    }
+    atomic_store_explicit(&audio->read_index, read_index, memory_order_release);
+    return count;
 }
 
 const char *vi_audio_state(const struct vi_audio *audio) {

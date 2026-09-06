@@ -8,19 +8,38 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       version = builtins.head (pkgs.lib.splitString "\n" (builtins.readFile ./VERSION));
+      modelArchive = pkgs.fetchurl {
+        url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2";
+        hash = "sha256-J/+9nuJK0YbZmswvY1TXmSsnvKtJCBJRBmX6j5OJxfg=";
+      };
+      streamingModel = pkgs.runCommand "voice-input-streaming-zipformer-zh-en" {
+        nativeBuildInputs = [ pkgs.bzip2 pkgs.gnutar ];
+      } ''
+        mkdir -p "$out"
+        model=sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
+        tar -xjf ${modelArchive} -C "$out" --strip-components=1 \
+          "$model/encoder-epoch-99-avg-1.int8.onnx" \
+          "$model/decoder-epoch-99-avg-1.onnx" \
+          "$model/joiner-epoch-99-avg-1.int8.onnx" \
+          "$model/tokens.txt" \
+          "$model/test_wavs/2.wav"
+      '';
     in {
       packages.${system}.default = pkgs.stdenv.mkDerivation {
         pname = "voice-input";
         inherit version;
         src = self;
 
-        nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
-        buildInputs = with pkgs; [ pipewire ];
+        nativeBuildInputs = with pkgs; [ cmake makeWrapper ninja pkg-config ];
+        buildInputs = with pkgs; [ fcitx5 pipewire sherpa-onnx ];
         doCheck = true;
+        cmakeFlags = [ "-DVOICE_INPUT_TEST_MODEL_DIR=${streamingModel}" ];
 
         postInstall = ''
           substituteInPlace "$out/lib/systemd/user/voice-inputd.service" \
             --replace-fail '@out@' "$out"
+          wrapProgram "$out/bin/voice-inputd" \
+            --set-default VOICE_INPUT_MODEL_DIR ${streamingModel}
         '';
       };
 
@@ -33,6 +52,8 @@
           gdb
           clang-tools
           pipewire
+          fcitx5
+          sherpa-onnx
         ];
       };
     };

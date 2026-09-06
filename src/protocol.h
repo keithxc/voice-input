@@ -17,6 +17,7 @@ enum vi_command vi_parse_command(const char *line);
 const char *vi_command_name(enum vi_command command);
 int vi_runtime_socket_path(char *buffer, size_t size);
 int vi_json_state(char *buffer, size_t size, const char *event, bool recording,
-                  const char *audio_state);
+                  const char *audio_state, const char *asr_state);
+int vi_json_text(char *buffer, size_t size, const char *event, const char *value);
 
 #endif

@@ -2,6 +2,7 @@
 #define VOICE_INPUT_AUDIO_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 struct vi_audio;
 
@@ -12,6 +13,7 @@ void vi_audio_destroy(struct vi_audio *audio);
 int vi_audio_start(struct vi_audio *audio);
 void vi_audio_stop(struct vi_audio *audio);
 int vi_audio_iterate(struct vi_audio *audio, int timeout_ms);
+size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity);
 const char *vi_audio_state(const struct vi_audio *audio);
 bool vi_audio_is_active(const struct vi_audio *audio);
 
