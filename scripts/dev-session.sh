@@ -32,9 +32,23 @@ if [ "${installed_pid:-0}" -gt 0 ] && [ -r "/proc/$installed_pid/environ" ]; the
         esac
     done < "/proc/$installed_pid/environ"
 fi
+# The installed service predates a setting whenever a new one is added, so fall
+# back to the pinned store paths this flake already builds rather than leaving
+# the feature silently off in the very session meant to test it.
+packaged_model() {
+    nix build --no-link --print-out-paths "$root#$1" 2>/dev/null || true
+}
+if [ -z "${VOICE_INPUT_MODEL_DIR:-}" ]; then
+    VOICE_INPUT_MODEL_DIR="$(packaged_model asr-model)"
+    export VOICE_INPUT_MODEL_DIR
+fi
 if [ -z "${VOICE_INPUT_MODEL_DIR:-}" ]; then
     echo "dev-session: set VOICE_INPUT_MODEL_DIR (the installed service has none)" >&2
     exit 1
+fi
+if [ -z "${VOICE_INPUT_PUNCT_MODEL_DIR:-}" ] && [ -z "${VOICE_INPUT_PUNCT_MODEL:-}" ]; then
+    VOICE_INPUT_PUNCT_MODEL_DIR="$(packaged_model punctuation-model)"
+    export VOICE_INPUT_PUNCT_MODEL_DIR
 fi
 export VOICE_INPUT_DEBUG_TIMING="${VOICE_INPUT_DEBUG_TIMING:-1}"
 
