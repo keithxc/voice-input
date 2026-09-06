@@ -114,9 +114,28 @@ static void timing_log(const char *format, ...) {
     fputc('\n', stderr);
 }
 
+/* Clients are non-blocking and never written to by the UI, so a stalled overlay
+   can only ever cost it events, never stall recognition. */
 static void send_to_client(struct app *app, size_t index, const char *message) {
-    ssize_t sent = send(app->clients[index], message, strlen(message), MSG_NOSIGNAL);
-    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) remove_client(app, index);
+    size_t remaining = strlen(message);
+    bool partial = false;
+    while (remaining > 0U) {
+        const ssize_t sent = send(app->clients[index], message, remaining,
+                                  MSG_NOSIGNAL);
+        if (sent > 0) {
+            message += sent;
+            remaining -= (size_t)sent;
+            partial = true;
+            continue;
+        }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && !partial) {
+            return;  /* nothing went out: skip this event rather than block */
+        }
+        /* Half an event was written, so the client's stream can no longer be
+           parsed; drop it and let it reconnect on a clean one. */
+        remove_client(app, index);
+        return;
+    }
 }
 
 static void broadcast(struct app *app, const char *message) {
