@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -35,6 +36,9 @@ struct app {
     float pending_level;
     bool first_audio_logged;
     size_t accepted_samples;
+    size_t window_samples;
+    double window_squares;
+    float window_peak;
     long last_throughput_ms;
     long tail_until_ms;
     struct timespec last_level_sent;
@@ -199,6 +203,9 @@ static int set_recording(struct app *app, bool recording) {
         timing_origin_ms = monotonic_ms();
         app->first_audio_logged = false;
         app->accepted_samples = 0U;
+        app->window_samples = 0U;
+        app->window_squares = 0.0;
+        app->window_peak = 0.0F;
         app->last_throughput_ms = 0L;
         timing_log("start command accepted");
         if (!app->no_audio && vi_audio_start(app->audio) < 0) {
@@ -376,6 +383,14 @@ static void process_audio(struct app *app) {
             timing_log("first audio reached ASR (%zu samples)", count);
         }
         app->accepted_samples += count;
+        if (debug_timing) {
+            app->window_samples += count;
+            for (size_t i = 0; i < count; ++i) {
+                app->window_squares += (double)samples[i] * (double)samples[i];
+                const float magnitude = samples[i] < 0.0F ? -samples[i] : samples[i];
+                if (magnitude > app->window_peak) app->window_peak = magnitude;
+            }
+        }
         const long before = monotonic_ms();
         (void)vi_asr_accept(app->asr, samples, count);
         const long spent = monotonic_ms() - before;
@@ -394,8 +409,21 @@ static void maybe_log_throughput(struct app *app) {
     if (elapsed - app->last_throughput_ms < 1000L) return;
     app->last_throughput_ms = elapsed;
     const double fed_ms = (double)app->accepted_samples / 16.0;
-    timing_log("fed %.0f ms of audio over %ld ms wall (%.2fx realtime)",
-               fed_ms, elapsed, elapsed > 0 ? fed_ms / (double)elapsed : 0.0);
+    /* The level of what actually reaches the recogniser, after source
+       selection and gain. Silence here with a moving level meter means the
+       wrong source was chosen; silence in both means nothing is being
+       captured at all. */
+    const double level = app->window_samples > 0
+        ? sqrt(app->window_squares / (double)app->window_samples)
+        : 0.0;
+    timing_log("fed %.0f ms of audio over %ld ms wall (%.2fx realtime), "
+               "rms %.4f peak %.3f from %s",
+               fed_ms, elapsed, elapsed > 0 ? fed_ms / (double)elapsed : 0.0,
+               level, (double)app->window_peak,
+               app->no_audio ? "none" : vi_audio_selected_source(app->audio));
+    app->window_squares = 0.0;
+    app->window_samples = 0U;
+    app->window_peak = 0.0F;
 }
 
 static void maybe_broadcast_level(struct app *app) {
