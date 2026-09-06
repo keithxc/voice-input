@@ -73,11 +73,13 @@ int vi_json_info(char *buffer, size_t size, const struct vi_status *status) {
                     "{\"event\":\"info\",\"recording\":%s,\"audio\":\"%s\","
                     "\"asr\":\"%s\",\"asr-backend\":\"%s\",\"asr-model\":\"%s\","
                     "\"asr-kind\":\"%s\",\"decoder\":\"%s\",\"threads\":%d,"
+                    "\"source-mode\":\"%s\",\"source\":\"%s\","
                     "\"punctuation\":\"%s\",\"punctuation-model\":\"%s\","
                     "\"sample-rate\":%d,\"tail-ms\":%ld}\n",
                     status->recording ? "true" : "false", status->audio,
                     status->asr, status->asr_backend, status->asr_model,
                     status->asr_kind, status->decoder, status->threads,
+                    status->source_mode, status->source,
                     status->punctuation, status->punctuation_model,
                     status->sample_rate, status->tail_ms);
 }

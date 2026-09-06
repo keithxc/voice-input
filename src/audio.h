@@ -20,6 +20,8 @@ float vi_audio_quality_score(float rms, float noise_floor, float clipping_ratio)
 const char *vi_audio_state(const struct vi_audio *audio);
 bool vi_audio_is_active(const struct vi_audio *audio);
 const char *vi_audio_selected_source(const struct vi_audio *audio);
+/* "default" (follows the desktop's input setting), "auto" or the pinned name. */
+const char *vi_audio_source_mode(const struct vi_audio *audio);
 size_t vi_audio_source_count(const struct vi_audio *audio);
 int vi_audio_describe_sources(const struct vi_audio *audio, char *buffer,
                               size_t size);

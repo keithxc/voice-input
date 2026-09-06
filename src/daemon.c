@@ -243,6 +243,9 @@ static void handle_command(struct app *app, size_t index, const char *line) {
             .asr_kind = vi_asr_model_kind(app->asr),
             .decoder = vi_asr_decoder(app->asr),
             .threads = vi_asr_threads(app->asr),
+            .source_mode = app->no_audio ? "disabled"
+                                         : vi_audio_source_mode(app->audio),
+            .source = app->no_audio ? "" : vi_audio_selected_source(app->audio),
             .punctuation = punctuation_state(app),
             .punctuation_model = vi_punctuation_model(app->punctuation),
             .sample_rate = 16000,

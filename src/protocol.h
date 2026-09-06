@@ -25,6 +25,8 @@ struct vi_status {
     const char *asr_kind;
     const char *decoder;
     int threads;
+    const char *source_mode;
+    const char *source;
     const char *punctuation;
     const char *punctuation_model;
     int sample_rate;

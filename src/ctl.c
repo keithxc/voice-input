@@ -23,6 +23,7 @@ static void print_status(const char *json) {
         { "asr-backend", "asr-backend" },
         { "asr-model", "asr-model" },   { "asr-kind", "asr-kind" },
         { "decoder", "decoder" },       { "threads", "threads" },
+        { "source-mode", "source-mode" }, { "source", "source" },
         { "punctuation", "punctuation" },
         { "punctuation-model", "punctuation-model" },
         { "sample-rate", "sample-rate" }, { "tail-ms", "tail-ms" },

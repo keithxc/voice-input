@@ -26,6 +26,7 @@ int main(void) {
         .recording = false, .audio = "ready", .asr = "ready",
         .asr_backend = "sherpa-cpu", .asr_model = "zipformer-zh-en",
         .asr_kind = "transducer", .decoder = "greedy_search", .threads = 2,
+        .source_mode = "default", .source = "Built-in Microphone",
         .punctuation = "enabled", .punctuation_model = "model.int8.onnx",
         .sample_rate = 16000, .tail_ms = 250,
     };
@@ -40,6 +41,8 @@ int main(void) {
     assert(strcmp(value, "false") == 0);
     assert(vi_json_field(info, "tail-ms", value, sizeof(value)) > 0);
     assert(strcmp(value, "250") == 0);
+    assert(vi_json_field(info, "source-mode", value, sizeof(value)) > 0);
+    assert(strcmp(value, "default") == 0);
     /* An absent key and a value that does not fit are both refusals, never a
        truncated answer the caller would act on. */
     assert(vi_json_field(info, "missing", value, sizeof(value)) < 0);

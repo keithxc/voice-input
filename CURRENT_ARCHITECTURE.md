@@ -46,11 +46,16 @@ dropping a buffer, up to the four seconds the ring holds.
 
 ## Capture
 
-- Every PipeWire `Audio/Source` is opened in parallel, up to `VI_MAX_SOURCES`
-  = 16, at **16 kHz mono float**.
-- Each source is scored on speech-to-noise, level and clipping; `src/selection.c`
-  is a pure function over those statistics and is unit tested without an audio
-  server.
+- Capture is **16 kHz mono float**. Which microphone is decided by
+  `VOICE_INPUT_SOURCE`: `default` (the default) follows PipeWire's
+  `default.audio.source` metadata, which is what the desktop's sound settings
+  write, so the daemon hears whatever the rest of the session hears; a
+  substring pins one node; `auto` opens every `Audio/Source` in parallel, up to
+  `VI_MAX_SOURCES` = 16.
+- Under `auto`, each source is scored on speech-to-noise, level and clipping;
+  `src/selection.c` is a pure function over those statistics and is unit tested
+  without an audio server. Arbitration runs only in that mode -- pinned modes
+  open one stream and keep it.
 - Bounded adaptive gain (`VOICE_INPUT_MAX_GAIN`, default 6.0;
   `VOICE_INPUT_TARGET_RMS`, default 0.08) lifts quiet microphones.
 - `VOICE_INPUT_PREROLL_MS` (default 0, max 3000) rewinds into the ring when
@@ -135,6 +140,7 @@ swapped between two runs of the same build:
 | `VOICE_INPUT_ENDPOINT_RULE2_MS` | 1200 | trailing silence after text |
 | `VOICE_INPUT_PUNCT_MODEL` | Nix store path | punctuation model directory |
 | `VOICE_INPUT_PUNCTUATION` | 1 | 0 disables punctuation |
+| `VOICE_INPUT_SOURCE` | `default` | `default`, `auto`, or a name substring |
 | `VOICE_INPUT_PREROLL_MS` | 0 | pre-roll rewind |
 | `VOICE_INPUT_TAIL_MS` | 250 | capture tail after stop |
 | `VOICE_INPUT_MAX_GAIN` | 6.0 | adaptive gain ceiling |

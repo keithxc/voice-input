@@ -6,6 +6,7 @@
 #include "selection.h"
 
 #include <math.h>
+#include <pipewire/extensions/metadata.h>
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
@@ -21,6 +22,18 @@
 #define VI_RING_SAMPLES 65536U
 
 struct vi_audio;
+
+/* Which microphone to listen to. Following the session manager's default is
+   what every other application does, so the input picked in the desktop's own
+   sound settings is the one that gets used; the parallel scoring of every
+   source is kept for the case that needs it and is no longer the default,
+   because arbitrating between microphones that are all quiet picks one of them
+   before anybody has spoken. */
+enum vi_source_mode {
+    VI_SOURCE_SYSTEM_DEFAULT,
+    VI_SOURCE_AUTO,
+    VI_SOURCE_NAMED,
+};
 
 struct vi_source {
     struct vi_audio *audio;
@@ -47,6 +60,11 @@ struct vi_audio {
     bool active;
     struct vi_source sources[VI_MAX_SOURCES];
     struct vi_selection selection;
+    enum vi_source_mode mode;
+    char wanted[256];
+    char default_source[256];
+    struct pw_metadata *metadata;
+    struct spa_hook metadata_listener;
     /* Lossy ring: the capture thread only ever publishes write_position, and the
        reader owns read_position, so neither blocks the other. Positions are
        monotonic sample counts rather than wrapped indices, which makes an
@@ -152,6 +170,43 @@ static void consider_source_switch(struct vi_audio *audio,
             chosen != VI_NO_SOURCE ? audio->sources[chosen].description : "none");
 }
 
+/* Until the session manager has said which input is the default, behave as the
+   parallel mode does rather than capturing nothing. */
+static bool arbitrating(const struct vi_audio *audio) {
+    return audio->mode == VI_SOURCE_AUTO ||
+           (audio->mode == VI_SOURCE_SYSTEM_DEFAULT &&
+            audio->default_source[0] == '\0');
+}
+
+static bool source_wanted(const struct vi_audio *audio,
+                          const struct vi_source *source) {
+    if (arbitrating(audio)) return true;
+    if (audio->mode == VI_SOURCE_NAMED) {
+        return strcasestr(source->name, audio->wanted) != NULL ||
+               strcasestr(source->description, audio->wanted) != NULL;
+    }
+    return strcmp(source->name, audio->default_source) == 0;
+}
+
+static void discard_captured_audio(struct vi_audio *audio) {
+    /* Nothing captured before a change of microphone may be replayed, so one
+       utterance is never stitched together from two of them. */
+    atomic_store_explicit(&audio->boundary_position,
+                          atomic_load_explicit(&audio->write_position,
+                                               memory_order_acquire),
+                          memory_order_release);
+}
+
+static void pin_selection(struct vi_audio *audio, struct vi_source *source) {
+    const int index = (int)(source - audio->sources);
+    if (audio->selection.selected == index) return;
+    discard_captured_audio(audio);
+    audio->selection.selected = index;
+    audio->selection.candidate = VI_NO_SOURCE;
+    audio->selection.candidate_votes = 0U;
+    fprintf(stderr, "voice-inputd: capturing from %s\n", source->description);
+}
+
 static void queue_selected_samples(struct vi_source *source, const uint8_t *data,
                                    size_t count, size_t stride, bool silent) {
     struct vi_audio *audio = source->audio;
@@ -237,7 +292,11 @@ static void on_stream_process(void *data) {
                 source->rms >= 2.0F * source->noise_floor) {
                 source->audio->selection.last_speech_ms = now_ms();
             }
-            consider_source_switch(source->audio, source);
+            if (arbitrating(source->audio)) {
+                consider_source_switch(source->audio, source);
+            } else {
+                pin_selection(source->audio, source);
+            }
             if (selected_source(source->audio) == source) {
                 queue_selected_samples(source, samples, count, stride, silent);
             }
@@ -305,6 +364,55 @@ static void stop_source(struct vi_source *source) {
     source->state = PW_STREAM_STATE_UNCONNECTED;
 }
 
+/* Opens the streams the policy asks for and closes the ones it does not, so a
+   change of default input takes effect without restarting the daemon. */
+static void apply_source_policy(struct vi_audio *audio) {
+    if (!audio->active) return;
+    for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
+        struct vi_source *source = &audio->sources[i];
+        if (source->id == SPA_ID_INVALID) continue;
+        const bool wanted = source_wanted(audio, source);
+        if (wanted && source->stream == NULL) {
+            if (start_source(source) < 0) {
+                fprintf(stderr, "voice-inputd: cannot listen to source: %s\n",
+                        source->description);
+            }
+        } else if (!wanted && source->stream != NULL) {
+            if (audio->selection.selected == (int)i) {
+                audio->selection.selected = VI_NO_SOURCE;
+                discard_captured_audio(audio);
+            }
+            stop_source(source);
+        }
+    }
+}
+
+static int on_metadata_property(void *data, uint32_t subject, const char *key,
+                                const char *type, const char *value) {
+    (void)type;
+    struct vi_audio *audio = data;
+    if (subject != PW_ID_CORE || key == NULL ||
+        strcmp(key, "default.audio.source") != 0) {
+        return 0;
+    }
+    char name[sizeof(audio->default_source)];
+    /* The value is a JSON object naming the node, e.g. {"name":"alsa_input…"}. */
+    if (value == NULL || vi_json_field(value, "name", name, sizeof(name)) <= 0) {
+        return 0;
+    }
+    if (strcmp(name, audio->default_source) == 0) return 0;
+    snprintf(audio->default_source, sizeof(audio->default_source), "%s", name);
+    fprintf(stderr, "voice-inputd: desktop default input is %s\n",
+            audio->default_source);
+    apply_source_policy(audio);
+    return 0;
+}
+
+static const struct pw_metadata_events metadata_events = {
+    PW_VERSION_METADATA_EVENTS,
+    .property = on_metadata_property,
+};
+
 static bool is_audio_source(const char *media_class) {
     /* Audio/Duplex covers combined capture/playback nodes, which is how several
        laptop codecs (including AMD ACP digital microphone arrays) expose their
@@ -321,6 +429,21 @@ static void on_registry_global(void *data, uint32_t id, uint32_t permissions,
     (void)permissions;
     (void)version;
     struct vi_audio *audio = data;
+    if (strcmp(type, PW_TYPE_INTERFACE_Metadata) == 0) {
+        const char *metadata_name =
+            props != NULL ? spa_dict_lookup(props, PW_KEY_METADATA_NAME) : NULL;
+        if (audio->metadata != NULL || metadata_name == NULL ||
+            strcmp(metadata_name, "default") != 0) {
+            return;
+        }
+        audio->metadata = pw_registry_bind(audio->registry, id, type,
+                                           PW_VERSION_METADATA, 0U);
+        if (audio->metadata != NULL) {
+            pw_metadata_add_listener(audio->metadata, &audio->metadata_listener,
+                                     &metadata_events, audio);
+        }
+        return;
+    }
     if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0 || props == NULL ||
         !is_audio_source(spa_dict_lookup(props, PW_KEY_MEDIA_CLASS))) {
         return;
@@ -336,10 +459,7 @@ static void on_registry_global(void *data, uint32_t id, uint32_t permissions,
         const char *description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
         snprintf(source->description, sizeof(source->description), "%s",
                  description != NULL ? description : name);
-        if (audio->active && start_source(source) < 0) {
-            fprintf(stderr, "voice-inputd: cannot listen to source: %s\n",
-                    source->description);
-        }
+        apply_source_policy(audio);
         return;
     }
     fprintf(stderr, "voice-inputd: ignoring audio source %s (source limit reached)\n",
@@ -389,6 +509,19 @@ struct vi_audio *vi_audio_create(vi_level_callback callback, void *userdata) {
                              &registry_events, audio);
     audio->callback = callback;
     audio->userdata = userdata;
+    const char *source_setting = getenv("VOICE_INPUT_SOURCE");
+    if (source_setting == NULL || source_setting[0] == '\0' ||
+        strcmp(source_setting, "default") == 0) {
+        audio->mode = VI_SOURCE_SYSTEM_DEFAULT;
+    } else if (strcmp(source_setting, "auto") == 0) {
+        audio->mode = VI_SOURCE_AUTO;
+        fprintf(stderr, "voice-inputd: scoring every input in parallel\n");
+    } else {
+        audio->mode = VI_SOURCE_NAMED;
+        snprintf(audio->wanted, sizeof(audio->wanted), "%s", source_setting);
+        fprintf(stderr, "voice-inputd: pinned to the input matching \"%s\"\n",
+                audio->wanted);
+    }
     audio->max_gain = environment_float("VOICE_INPUT_MAX_GAIN", 6.0F, 1.0F, 16.0F);
     audio->target_rms = environment_float("VOICE_INPUT_TARGET_RMS", 0.08F,
                                           0.01F, 0.30F);
@@ -426,6 +559,7 @@ void vi_audio_stop(struct vi_audio *audio) {
 void vi_audio_destroy(struct vi_audio *audio) {
     if (audio == NULL) return;
     vi_audio_stop(audio);
+    if (audio->metadata != NULL) pw_proxy_destroy((struct pw_proxy *)audio->metadata);
     if (audio->registry != NULL) pw_proxy_destroy((struct pw_proxy *)audio->registry);
     if (audio->core != NULL) pw_core_disconnect(audio->core);
     if (audio->context != NULL) pw_context_destroy(audio->context);
@@ -458,10 +592,10 @@ int vi_audio_start(struct vi_audio *audio) {
     }
     audio->active = true;
     vi_selection_reset(&audio->selection);
+    apply_source_policy(audio);
     int started = 0;
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
-        if (audio->sources[i].id != SPA_ID_INVALID &&
-            start_source(&audio->sources[i]) == 0) ++started;
+        if (audio->sources[i].stream != NULL) ++started;
     }
     if (started == 0) {
         fprintf(stderr, "voice-inputd: no capture source available; check that "
@@ -530,6 +664,15 @@ const char *vi_audio_selected_source(const struct vi_audio *audio) {
                : "";
 }
 
+const char *vi_audio_source_mode(const struct vi_audio *audio) {
+    if (audio == NULL) return "disabled";
+    switch (audio->mode) {
+    case VI_SOURCE_AUTO: return "auto";
+    case VI_SOURCE_NAMED: return audio->wanted;
+    default: return "default";
+    }
+}
+
 size_t vi_audio_source_count(const struct vi_audio *audio) {
     if (audio == NULL) return 0U;
     size_t count = 0U;
@@ -560,8 +703,9 @@ int vi_audio_describe_sources(const struct vi_audio *audio, char *buffer,
     }
     int written = snprintf(buffer, size,
                            "{\"event\":\"sources\",\"active\":%s,"
-                           "\"selected\":\"%s\",\"items\":[",
-                           vi_audio_is_active(audio) ? "true" : "false", selected);
+                           "\"mode\":\"%s\",\"selected\":\"%s\",\"items\":[",
+                           vi_audio_is_active(audio) ? "true" : "false",
+                           vi_audio_source_mode(audio), selected);
     if (written < 0 || (size_t)written >= size) return -1;
     size_t used = (size_t)written;
 

@@ -13,8 +13,9 @@ fallbacks.
 The first usable milestone includes:
 
 - a persistent C17 daemon with zero audio processing while idle;
-- zero-configuration parallel PipeWire capture of up to 16 hot-plugged input
-  devices at 16 kHz mono, with automatic quality-based source selection;
+- 16 kHz mono PipeWire capture that follows the desktop's own input setting,
+  with optional pinning or parallel quality-based selection across up to 16
+  hot-plugged devices;
 - bounded adaptive input gain for quiet speech, with peak limiting;
 - a local Unix socket command/event protocol;
 - start, stop, toggle, status, monitor, and clean shutdown commands;
@@ -70,23 +71,42 @@ the stop command before the recogniser finalises. `VOICE_INPUT_TAIL_MS` sets it,
 defaulting to `250`; `0` finalises immediately, at the cost of the last syllable
 of a sentence that fades out. Accepted range is `0..2000` ms.
 
-While recording, every available PipeWire `Audio/Source` is opened as a shared
-capture stream. Each stream is scored independently using speech-to-noise
-ratio, useful signal level, and clipping. The daemon sends only the clearest
-source to ASR and uses a margin, consecutive votes, and a cooldown before
-switching. Selection is bootstrapped on the first source that delivers buffers,
-however quiet, so a low-output built-in microphone still reaches the recogniser;
-the quality thresholds then apply only to switching away from it. Because that
-first pick is whichever source happens to deliver first, a short warm-up window
-lets a better-scoring source be taken outright, so an unlucky pick costs
-milliseconds instead of a full margin-and-vote run. The arbitration
-rules live in `src/selection.c` as a pure function over plain source statistics,
-so they are unit tested without an audio server. Once speech begins, the chosen source is held through short pauses
-so an utterance cannot be split by quality fluctuations. Newly connected USB
-or Bluetooth microphones are discovered without configuration; unavailable
-sources are skipped. Unrelated devices are not
-mixed because their clocks, latency, and noise are not synchronized.
-The overlay shows the source currently feeding ASR.
+## Choosing the microphone
+
+By default the daemon listens to **the input selected in the desktop's own
+sound settings**, the same one every other application uses. It follows
+PipeWire's `default.audio.source`, so changing the input in KDE's sound
+settings changes what voice-input hears, with no restart and no configuration
+here.
+
+`voice-inputctl status` says which one that resolved to:
+
+```text
+source-mode:       default
+source:            AB13X Headset Adapter Mono
+```
+
+Two other modes exist for the cases the default does not cover:
+
+```sh
+VOICE_INPUT_SOURCE=Ryzen voice-inputd    # pin: substring of the node name
+                                         # or description, case-insensitive
+VOICE_INPUT_SOURCE=auto voice-inputd     # open every input and score them
+```
+
+`auto` opens every available `Audio/Source` in parallel, scores each on
+speech-to-noise ratio, useful level and clipping, and feeds the recogniser from
+the clearest. It is useful when microphones are hot-plugged and the desktop
+default is not the one being spoken into, but it is **not** the default any
+more: with several quiet inputs the scores are close, so it picks one before
+anybody has spoken and can pick the wrong one. The arbitration rules live in
+`src/selection.c` as a pure function over plain source statistics, so they are
+unit tested without an audio server. Unrelated devices are never mixed, because
+their clocks, latency and noise are not synchronised.
+
+The `sources` command lists every discovered node with its state, level, noise
+floor and score in any mode, and the overlay shows the source actually feeding
+the recogniser.
 
 ## Build
 
