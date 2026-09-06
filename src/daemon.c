@@ -12,6 +12,7 @@
 #include <math.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,8 @@ struct app {
     double window_squares;
     float window_peak;
     long last_throughput_ms;
+    FILE *debug_wav;
+    size_t debug_wav_samples;
     long tail_until_ms;
     struct timespec last_level_sent;
     char selected_source[256];
@@ -98,6 +101,60 @@ static int create_server(const char *path) {
 static void remove_client(struct app *app, size_t index) {
     close(app->clients[index]);
     app->clients[index] = -1;
+}
+
+/* VOICE_INPUT_DEBUG_WAV writes exactly the samples handed to the recogniser --
+   after source selection and gain, which is what makes it worth having: a
+   recording made with any other tool answers a different question. The file is
+   a plain 16 kHz mono WAV, so it can be listened to and replayed through
+   voice-input-asr-bench. */
+static void debug_wav_open(struct app *app, const char *path) {
+    app->debug_wav = fopen(path, "wb");
+    if (app->debug_wav == NULL) {
+        fprintf(stderr, "voice-inputd: cannot write %s\n", path);
+        return;
+    }
+    static const unsigned char header[44] = {
+        'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ',
+        16,0,0,0, 1,0, 1,0, 0x80,0x3E,0,0, 0,0x7D,0,0, 2,0, 16,0,
+        'd','a','t','a', 0,0,0,0,
+    };
+    fwrite(header, 1, sizeof(header), app->debug_wav);
+    app->debug_wav_samples = 0U;
+}
+
+static void debug_wav_write(struct app *app, const float *samples, size_t count) {
+    if (app->debug_wav == NULL) return;
+    for (size_t i = 0; i < count; ++i) {
+        float value = samples[i];
+        if (value > 1.0F) value = 1.0F;
+        if (value < -1.0F) value = -1.0F;
+        const int16_t sample = (int16_t)(value * 32767.0F);
+        const unsigned char bytes[2] = { (unsigned char)((unsigned)sample & 0xFFU),
+                                         (unsigned char)(((unsigned)sample >> 8) & 0xFFU) };
+        fwrite(bytes, 1, sizeof(bytes), app->debug_wav);
+    }
+    app->debug_wav_samples += count;
+}
+
+static void write_le32(FILE *file, long offset, uint32_t value) {
+    const unsigned char bytes[4] = {
+        (unsigned char)(value & 0xFFU), (unsigned char)((value >> 8) & 0xFFU),
+        (unsigned char)((value >> 16) & 0xFFU), (unsigned char)((value >> 24) & 0xFFU),
+    };
+    fseek(file, offset, SEEK_SET);
+    fwrite(bytes, 1, sizeof(bytes), file);
+}
+
+static void debug_wav_close(struct app *app) {
+    if (app->debug_wav == NULL) return;
+    const uint32_t data_bytes = (uint32_t)(app->debug_wav_samples * 2U);
+    write_le32(app->debug_wav, 4, data_bytes + 36U);
+    write_le32(app->debug_wav, 40, data_bytes);
+    fclose(app->debug_wav);
+    app->debug_wav = NULL;
+    fprintf(stderr, "voice-inputd: wrote %.1f s of recogniser input\n",
+            (double)app->debug_wav_samples / 16000.0);
 }
 
 /* VOICE_INPUT_DEBUG_TIMING traces the path from the start command to the first
@@ -180,6 +237,7 @@ static void finish_recording(struct app *app) {
     }
     app->recording = false;
     app->tail_until_ms = 0L;
+    debug_wav_close(app);
     timing_log("recording finished");
     broadcast_state(app, "state");
 }
@@ -208,6 +266,10 @@ static int set_recording(struct app *app, bool recording) {
         app->window_peak = 0.0F;
         app->last_throughput_ms = 0L;
         timing_log("start command accepted");
+        const char *debug_wav_path = getenv("VOICE_INPUT_DEBUG_WAV");
+        if (debug_wav_path != NULL && debug_wav_path[0] != '\0') {
+            debug_wav_open(app, debug_wav_path);
+        }
         if (!app->no_audio && vi_audio_start(app->audio) < 0) {
             broadcast(app,
                       "{\"event\":\"error\",\"message\":\"pipewire-start-failed\"}\n");
@@ -386,6 +448,7 @@ static void process_audio(struct app *app) {
             timing_log("first audio reached ASR (%zu samples)", count);
         }
         app->accepted_samples += count;
+        debug_wav_write(app, samples, count);
         if (debug_timing) {
             app->window_samples += count;
             for (size_t i = 0; i < count; ++i) {
