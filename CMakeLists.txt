@@ -44,7 +44,16 @@ target_compile_definitions(voice-inputctl PRIVATE VOICE_INPUT_VERSION="${PROJECT
 target_compile_options(voice-inputctl PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
-install(TARGETS voice-inputd voice-inputctl RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+add_executable(voice-input-asr-bench tools/benchmark/asr_bench.c src/asr.c
+  src/punctuation.c)
+target_include_directories(voice-input-asr-bench PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")
+target_link_libraries(voice-input-asr-bench PRIVATE voice-input-common
+  "${SHERPA_ONNX_C_API}")
+target_compile_options(voice-input-asr-bench PRIVATE
+  $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
+
+install(TARGETS voice-inputd voice-inputctl voice-input-asr-bench
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 qt_add_executable(voice-input-overlay
   overlay/main.cpp

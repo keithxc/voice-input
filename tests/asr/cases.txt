@@ -1,0 +1,55 @@
+# The fixed prompt set for the recognition benchmark.
+#
+# tags<TAB>text
+#
+# This is not an academic corpus. It is what a Linux programmer actually
+# dictates: Chinese sentences carrying English identifiers, plain Chinese,
+# plain English, and the conditions a desk really has -- a quiet room, a noisy
+# one, and a sentence with a pause in the middle.
+#
+# Read each line aloud once, in the condition its tags describe. Keep the list
+# and its tags stable: a rate is only comparable across runs if the same
+# sentences sit in the same bucket. Record it with scripts/record-corpus.sh.
+#
+#   zh / en / mixed  language of the sentence
+#   technical        vocabulary this project itself dictates
+#   quiet            spoken softly, as in a shared room
+#   noise            spoken over background noise (traffic, music, a fan)
+#   endpoint         deliberately paused in the middle
+#
+# Number words are written the way they are spoken. A recogniser that emits
+# digits instead scores as an error on purpose: the text that lands in the
+# editor is what is being measured, not what it meant.
+mixed	帮我看一下这个 buffer 有没有内存泄漏
+mixed	这个 function 返回 NULL 的时候需要重新初始化
+mixed	把这个 framebuffer 清空然后重新绘制
+mixed	这个 GPIO 中断是不是没有 disable
+mixed	检查一下 malloc 的 return value
+mixed,technical	这个 PipeWire stream 为什么一直处于 paused 状态
+mixed,technical	NixOS 重新 build 之后 systemd service 没有启动
+mixed	这个 LVGL widget 需要放到 event callback 里面处理
+mixed	SPI 读出来的数据有两个 byte 不对
+mixed	I2C timeout 之后重新 reset bus
+mixed	帮我把这个 pull request 合并到 main 分支
+mixed,technical	这台机器上跑的是 NixOS 用的是 Wayland 和 PipeWire
+mixed	这个 bug 只在 release build 里出现 debug build 是好的
+mixed,technical	zipformer 模型在流式解码的时候延迟大概是三百二十毫秒
+zh	今天下午我要去超市买一点东西
+zh	这个方案看起来不错但是还有一些问题需要解决
+zh	明天如果天气不错我们就出去走走
+zh	请帮我把这段文字复制到剪贴板然后粘贴到浏览器里
+zh	这个功能默认是关闭的需要在设置里手动打开
+zh	他说的那个方案我们上周已经讨论过一次了
+en	please check the return value before calling free
+en	this buffer should be allocated only once
+en	the service failed to start after reboot
+en,technical	configure the systemd user service to restart on failure
+en	i cannot reproduce the failure on my machine but it happens on the server
+en	remind me to send the report before the end of the week
+quiet,zh	请把音量调小一点我现在在图书馆里
+quiet,mixed	这个 buffer 应该怎么处理你小声说一下
+quiet,en	speak softly because the room next door is still in a meeting
+noise,zh	外面正在施工请忽略背景里的噪音
+noise,mixed	我在咖啡馆里录这一句你帮我看看 log 里面有什么
+noise,en	there is music playing in the background while i dictate this sentence
+endpoint,mixed	我先说前半句然后停一下再说后半句看看会不会被切成两段

@@ -75,9 +75,11 @@
             --replace-fail '@out@' "$out"
           substituteInPlace "$out/lib/systemd/user/voice-input-overlay.service" \
             --replace-fail '@out@' "$out"
-          wrapProgram "$out/bin/voice-inputd" \
-            --set-default VOICE_INPUT_MODEL_DIR ${streamingModel} \
-            --set-default VOICE_INPUT_PUNCT_MODEL_DIR ${punctuationModel}
+          for program in voice-inputd voice-input-asr-bench; do
+            wrapProgram "$out/bin/$program" \
+              --set-default VOICE_INPUT_MODEL_DIR ${streamingModel} \
+              --set-default VOICE_INPUT_PUNCT_MODEL_DIR ${punctuationModel}
+          done
         '';
       };
 
