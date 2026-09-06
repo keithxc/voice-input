@@ -30,7 +30,7 @@ Window {
             "paddingScale": 0.85,
             "columnSpacingScale": 0.28,
             "rowSpacingScale": 0.70,
-            "widthUnits": 27.0,
+            "widthUnits": 34.0,
             "borderAlpha": 0.95,
             "accentBar": true,
             "panelAlpha": 0.97,
@@ -47,7 +47,7 @@ Window {
             "paddingScale": 1.20,
             "columnSpacingScale": 0.42,
             "rowSpacingScale": 0.85,
-            "widthUnits": 26.0,
+            "widthUnits": 33.0,
             "borderAlpha": 0.45,
             "accentBar": false,
             "panelAlpha": 0.99,
@@ -64,7 +64,7 @@ Window {
             "barCornerScale": 0.25,
             "columnSpacingScale": 0.35,
             "rowSpacingScale": 0.75,
-            "widthUnits": 26.0,
+            "widthUnits": 33.0,
             "borderAlpha": 0.7,
             "accentBar": false,
             "panelAlpha": 0.98,
@@ -105,10 +105,14 @@ Window {
     readonly property color successColor: darkMode ? "#63d894" : "#168553"
     readonly property color signalColor: overlayModel.error ? dangerColor : accentColor
 
+    readonly property real transcriptSize: Math.round(unit * 1.05)
+    readonly property int transcriptLines: 3
+    readonly property real maxTranscriptHeight:
+        Math.round(transcriptSize * 1.45 * transcriptLines)
     readonly property real padding: Math.round(unit * style.paddingScale)
     readonly property real corner: Math.round(unit * style.cornerScale)
 
-    width: Math.round(Math.min(Screen.width * 0.6, unit * style.widthUnits))
+    width: Math.round(Math.min(Screen.width * 0.62, unit * style.widthUnits))
     height: Math.round(content.implicitHeight + padding * 2)
     x: Screen.virtualX + Math.round((Screen.width - width) / 2)
     y: Screen.virtualY + Screen.height - height - Math.round(unit * 3)
@@ -212,7 +216,7 @@ Window {
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: overlayModel.source.length > 0
-                        width: Math.min(sourceLabel.implicitWidth + root.unit * 0.8,
+                        width: Math.min(sourceLabel.implicitWidth + root.unit * 1.1,
                                         parent.width - statusLabel.width
                                         - parent.spacing)
                         height: Math.round(root.unit * 1.15)
@@ -235,14 +239,29 @@ Window {
                     }
                 }
 
-                Text {
+                Item {
+                    id: transcriptViewport
                     width: parent.width
-                    text: overlayModel.text
+                    height: Math.min(transcript.contentHeight,
+                                     root.maxTranscriptHeight)
                     visible: overlayModel.text.length > 0
-                    color: root.primaryText
-                    font.pixelSize: Math.round(root.unit * 1.05)
-                    font.weight: root.style.textWeight
-                    elide: Text.ElideRight
+                    clip: true
+
+                    Text {
+                        id: transcript
+                        width: parent.width
+                        text: overlayModel.text
+                        wrapMode: Text.Wrap
+                        color: root.primaryText
+                        font.pixelSize: root.transcriptSize
+                        font.weight: root.style.textWeight
+                        // Dictation grows to the right and downwards, so keep the
+                        // newest words in view rather than eliding them away.
+                        y: Math.min(0, transcriptViewport.height - contentHeight)
+                        Behavior on y {
+                            NumberAnimation { duration: 90 }
+                        }
+                    }
                 }
             }
 

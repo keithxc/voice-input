@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
         model.processLine(R"({"event":"state","recording":true})");
         model.processLine(R"({"event":"source","text":"AB13X USB Microphone"})");
         model.processLine(R"({"event":"level","rms":0.18})");
-        model.processLine(R"({"event":"partial","text":"NixOS 原生流式语音输入"})");
+        model.processLine(R"({"event":"partial","text":"NixOS 原生流式语音输入，这一段刻意写得长一些，用来验证浮层在长句下会换行并保留最新的内容而不是把文字截断"})");
     } else {
         model.connectToDaemon();
     }
