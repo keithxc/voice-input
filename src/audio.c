@@ -145,7 +145,7 @@ static void consider_source_switch(struct vi_audio *audio,
 }
 
 static void queue_selected_samples(struct vi_source *source, const uint8_t *data,
-                                   size_t count, size_t stride) {
+                                   size_t count, size_t stride, bool silent) {
     struct vi_audio *audio = source->audio;
     size_t write_index = atomic_load_explicit(&audio->write_index,
                                               memory_order_relaxed);
@@ -153,7 +153,7 @@ static void queue_selected_samples(struct vi_source *source, const uint8_t *data
                                                    memory_order_acquire);
     for (size_t i = 0; i < count; ++i) {
         int16_t sample = 0;
-        memcpy(&sample, data + i * stride, sizeof(sample));
+        if (!silent) memcpy(&sample, data + i * stride, sizeof(sample));
         const size_t next = (write_index + 1U) % VI_RING_SAMPLES;
         if (next == read_index) break;
         audio->samples[write_index] = (float)((double)sample / 32768.0);
@@ -182,13 +182,21 @@ static void on_stream_process(void *data) {
     if (pw_buffer == NULL) return;
 
     struct spa_buffer *buffer = pw_buffer->buffer;
-    if (buffer->n_datas > 0U && buffer->datas[0].data != NULL) {
+    if (buffer->n_datas > 0U && buffer->datas[0].data != NULL &&
+        buffer->datas[0].chunk != NULL &&
+        ((uint32_t)buffer->datas[0].chunk->flags &
+         SPA_CHUNK_FLAG_CORRUPTED) == 0U) {
         struct spa_data *spa_data = &buffer->datas[0];
-        const uint32_t offset = spa_data->chunk != NULL ? spa_data->chunk->offset : 0U;
-        const uint32_t bytes = spa_data->chunk != NULL ? spa_data->chunk->size : 0U;
-        const int32_t chunk_stride = spa_data->chunk != NULL
-                                         ? spa_data->chunk->stride
-                                         : (int32_t)sizeof(int16_t);
+        /* A source with nothing to send flags the chunk EMPTY and may leave the
+           mapped memory untouched, so its contents must never be measured or
+           forwarded: reading them yields full-scale noise that both drowns the
+           recogniser and beats every real microphone on level. */
+        const bool silent =
+            ((uint32_t)spa_data->chunk->flags & SPA_CHUNK_FLAG_EMPTY) != 0U;
+        const uint32_t offset = SPA_MIN(spa_data->chunk->offset, spa_data->maxsize);
+        const uint32_t bytes = SPA_MIN(spa_data->chunk->size,
+                                       spa_data->maxsize - offset);
+        const int32_t chunk_stride = spa_data->chunk->stride;
         const size_t stride = chunk_stride >= (int32_t)sizeof(int16_t)
                                   ? (size_t)chunk_stride
                                   : sizeof(int16_t);
@@ -196,7 +204,7 @@ static void on_stream_process(void *data) {
         const size_t count = bytes / stride;
         double squares = 0.0;
         size_t clipped = 0U;
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; !silent && i < count; ++i) {
             int16_t sample = 0;
             memcpy(&sample, samples + i * stride, sizeof(sample));
             const float normalized = (float)((double)sample / 32768.0);
@@ -225,7 +233,7 @@ static void on_stream_process(void *data) {
             }
             consider_source_switch(source->audio, source);
             if (selected_source(source->audio) == source) {
-                queue_selected_samples(source, samples, count, stride);
+                queue_selected_samples(source, samples, count, stride, silent);
             }
         }
     }
