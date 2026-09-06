@@ -12,6 +12,7 @@
  */
 
 #include "asr.h"
+#include "audio.h"
 #include "punctuation.h"
 #include "score.h"
 
@@ -222,6 +223,9 @@ struct run {
     struct vi_punctuation *punctuation;
     struct collector *collector;
     bool realtime;
+    bool adaptive_gain;
+    float max_gain;
+    float target_rms;
 };
 
 static int score_clip(const struct run *run, const char *wav_path,
@@ -247,6 +251,8 @@ static int score_clip(const struct run *run, const char *wav_path,
     clock_gettime(CLOCK_MONOTONIC, &collector->started);
 
     const int32_t chunk = 1600;  /* 100 ms, the daemon's own feed size */
+    float adjusted[1600];
+    float gain = 1.0F;
     double decode_ms = 0.0;
     int status = 0;
     for (int32_t offset = 0; offset < wave->num_samples; offset += chunk) {
@@ -258,7 +264,14 @@ static int score_clip(const struct run *run, const char *wav_path,
         }
         struct timespec before;
         clock_gettime(CLOCK_MONOTONIC, &before);
-        if (vi_asr_accept(run->asr, wave->samples + offset, (size_t)count) < 0) {
+        const float *input = wave->samples + offset;
+        if (run->adaptive_gain) {
+            memcpy(adjusted, input, (size_t)count * sizeof(*adjusted));
+            gain = vi_audio_apply_gain(adjusted, (size_t)count, gain,
+                                       run->max_gain, run->target_rms);
+            input = adjusted;
+        }
+        if (vi_asr_accept(run->asr, input, (size_t)count) < 0) {
             status = -1;
             break;
         }
@@ -305,7 +318,12 @@ static void usage(void) {
             "  --punct-model DIR   punctuation model; off when unset\n"
             "  --decoder NAME      greedy_search or modified_beam_search\n"
             "  --threads N         inference threads, default 2\n"
+            "  --max-active-paths N  beam width, default 4\n"
             "  --hotwords FILE     hotwords, modified_beam_search only\n"
+            "  --hotwords-score N  hotword score, default 1.5\n"
+            "  --adaptive-gain    apply the daemon's gain stage\n"
+            "  --max-gain N       gain ceiling, default 8\n"
+            "  --target-rms N     gain target, default 0.03\n"
             "  --float             prefer float weights over int8\n"
             "  --fast              feed as fast as possible; latency then\n"
             "                      measures throughput, not what a speaker waits\n"
@@ -330,6 +348,9 @@ int main(int argc, char **argv) {
     const char *manifest_path = NULL;
     bool verbose = false;
     bool realtime = true;
+    bool adaptive_gain = false;
+    float max_gain = 8.0F;
+    float target_rms = 0.03F;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
@@ -340,8 +361,35 @@ int main(int argc, char **argv) {
             config.decoding_method = argv[++i];
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             config.threads = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--max-active-paths") == 0 && i + 1 < argc) {
+            config.max_active_paths = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--hotwords") == 0 && i + 1 < argc) {
             config.hotwords_file = argv[++i];
+        } else if (strcmp(argv[i], "--hotwords-score") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            config.hotwords_score = strtof(argv[++i], &end);
+            if (end == argv[i] || *end != '\0') {
+                usage();
+                return EXIT_FAILURE;
+            }
+        } else if (strcmp(argv[i], "--adaptive-gain") == 0) {
+            adaptive_gain = true;
+        } else if (strcmp(argv[i], "--max-gain") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            max_gain = strtof(argv[++i], &end);
+            if (end == argv[i] || *end != '\0') {
+                usage();
+                return EXIT_FAILURE;
+            }
+            adaptive_gain = true;
+        } else if (strcmp(argv[i], "--target-rms") == 0 && i + 1 < argc) {
+            char *end = NULL;
+            target_rms = strtof(argv[++i], &end);
+            if (end == argv[i] || *end != '\0') {
+                usage();
+                return EXIT_FAILURE;
+            }
+            adaptive_gain = true;
         } else if (strcmp(argv[i], "--float") == 0) {
             config.prefer_int8 = false;
         } else if (strcmp(argv[i], "--fast") == 0) {
@@ -356,7 +404,11 @@ int main(int argc, char **argv) {
         }
     }
     if (manifest_path == NULL || config.model_directory == NULL ||
-        config.model_directory[0] == '\0') {
+        config.model_directory[0] == '\0' || config.threads < 1 ||
+        config.threads > 32 || config.max_active_paths < 1 ||
+        config.max_active_paths > 64 || config.hotwords_score < 0.0F ||
+        config.hotwords_score > 100.0F || max_gain < 1.0F ||
+        max_gain > 16.0F || target_rms < 0.01F || target_rms > 0.30F) {
         usage();
         return EXIT_FAILURE;
     }
@@ -401,7 +453,9 @@ int main(int argc, char **argv) {
         }
     }
     const struct run run = { .asr = asr, .punctuation = punctuation,
-                             .collector = &collector, .realtime = realtime };
+                             .collector = &collector, .realtime = realtime,
+                             .adaptive_gain = adaptive_gain,
+                             .max_gain = max_gain, .target_rms = target_rms };
 
     struct bucket buckets[MAX_TAGS] = {0};
     size_t bucket_count = 0;
@@ -418,6 +472,20 @@ int main(int argc, char **argv) {
     printf("model        %s (%s, %s, %d threads, %s weights)\n",
            vi_asr_model_name(asr), vi_asr_model_kind(asr), vi_asr_decoder(asr),
            vi_asr_threads(asr), config.prefer_int8 ? "int8" : "float");
+    if (strcmp(vi_asr_decoder(asr), "modified_beam_search") == 0) {
+        printf("beam         %d active paths", config.max_active_paths);
+        if (config.hotwords_file != NULL) {
+            printf(", hotwords score %.2f", (double)config.hotwords_score);
+        }
+        putchar('\n');
+    }
+    printf("gain         ");
+    if (adaptive_gain) {
+        printf("adaptive (max %.1fx, target RMS %.3f)\n", (double)max_gain,
+               (double)target_rms);
+    } else {
+        puts("off");
+    }
     printf("punctuation  %s\n",
            punctuation != NULL ? vi_punctuation_model(punctuation) : "off");
     printf("load         %.0f ms ASR", asr_load_ms);

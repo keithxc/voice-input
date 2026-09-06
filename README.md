@@ -44,14 +44,16 @@ No placeholder transcript is emitted: UI text and state come from the daemon's
 real event stream.
 
 Quiet-speech sensitivity can be tuned without rebuilding. The defaults are a
-maximum gain of `6.0` and a target RMS of `0.08`:
+maximum gain of `6.0` and a conservative target RMS of `0.03`:
 
 ```sh
-VOICE_INPUT_MAX_GAIN=8 VOICE_INPUT_TARGET_RMS=0.10 voice-inputd
+VOICE_INPUT_MAX_GAIN=8 VOICE_INPUT_TARGET_RMS=0.03 voice-inputd
 ```
 
-Higher values hear softer speech but also amplify room noise. Accepted ranges
-are `1..16` for maximum gain and `0.01..0.30` for target RMS.
+Higher values hear softer speech but also amplify room noise. Chunks below the
+noise gate remain at unity gain, so pre-roll silence cannot prime the first
+syllable at maximum gain. Accepted ranges are `1..16` for maximum gain and
+`0.01..0.30` for target RMS.
 
 The first words of an utterance are easy to lose, because a hotkey press has to
 travel through the desktop's shortcut dispatch and a capture stream has to be
@@ -287,6 +289,17 @@ Any model can be scored against the same clips without rebuilding:
 ```sh
 ./result/bin/voice-input-asr-bench --model ~/models/other-model \
     --decoder modified_beam_search --threads 4 ~/voice-input-corpus/manifest.tsv
+```
+
+The benchmark can also replay the daemon's adaptive-gain stage and expose beam
+and hotword settings explicitly:
+
+```sh
+./result/bin/voice-input-asr-bench --adaptive-gain --max-gain 8 \
+    --target-rms 0.03 ~/voice-input-corpus/manifest.tsv
+./result/bin/voice-input-asr-bench --decoder modified_beam_search \
+    --max-active-paths 4 --hotwords terms.txt --hotwords-score 1.5 \
+    ~/voice-input-corpus/manifest.tsv
 ```
 
 Spacing, letter case, punctuation and fullwidth forms are normalised away

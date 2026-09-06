@@ -11,10 +11,17 @@ static float rms(const float *samples, size_t count) {
 }
 
 int main(void) {
+    float silence[1600] = { 0.0F };
+    const float silent_gain =
+        vi_audio_apply_gain(silence, 1600U, 8.0F, 8.0F, 0.10F);
+    if (silent_gain > 1.01F || rms(silence, 1600U) != 0.0F) return EXIT_FAILURE;
+
     float quiet[1600];
     for (size_t i = 0; i < 1600U; ++i) quiet[i] = (i % 2U == 0U) ? 0.005F : -0.005F;
-    const float gain = vi_audio_apply_gain(quiet, 1600U, 8.0F, 8.0F, 0.10F);
-    if (gain < 7.9F || rms(quiet, 1600U) < 0.039F) return EXIT_FAILURE;
+    const float gain = vi_audio_apply_gain(quiet, 1600U, silent_gain, 8.0F, 0.10F);
+    if (gain <= 1.0F || gain >= 8.0F || rms(quiet, 1600U) < 0.015F) {
+        return EXIT_FAILURE;
+    }
 
     float loud[] = { 0.9F, -0.9F, 0.6F, -0.6F };
     const float reduced = vi_audio_apply_gain(loud, 4U, gain, 8.0F, 0.10F);

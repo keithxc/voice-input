@@ -45,10 +45,10 @@ target_compile_options(voice-inputctl PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
 add_executable(voice-input-asr-bench tools/benchmark/asr_bench.c src/asr.c
-  src/punctuation.c)
+  src/audio.c src/punctuation.c)
 target_include_directories(voice-input-asr-bench PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")
 target_link_libraries(voice-input-asr-bench PRIVATE voice-input-common
-  "${SHERPA_ONNX_C_API}")
+  "${SHERPA_ONNX_C_API}" PkgConfig::PIPEWIRE m)
 target_compile_options(voice-input-asr-bench PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 

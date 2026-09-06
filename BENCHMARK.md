@@ -24,8 +24,9 @@ measured from the first 20 ms window that rises above the clip's noise floor,
 not from the head of the file, so a recording that starts with silence does not
 flatter the model.
 
-The benchmark feeds wav files. Capture, adaptive gain and source selection are
-outside it; a regression in those does not show up here.
+The benchmark feeds wav files, so capture and source selection remain outside
+it. Pass `--adaptive-gain` to replay the daemon's gain stage over the same
+recording; without that option the captured samples are passed through as-is.
 
 ## Accuracy: not yet measured
 
@@ -102,6 +103,26 @@ rate. **It should be revisited once `tests/asr/cases.txt` is recorded**, which
 is the only way to tell whether the incumbent's Chinese is actually competitive
 with a newer Chinese-only model on a bilingual speaker's Chinese.
 
+## Acoustic loopback and gain policy
+
+A small hardware-loop smoke test played upstream clip 2 through the laptop's
+speaker and recorded it with an AB13X USB microphone. This is one known prompt,
+not a replacement for the personal corpus, but it caught a real gain regression:
+
+| Input | Gain policy | Han CER | Latin WER |
+| --- | --- | ---: | ---: |
+| clipped close-mic capture | off | 56.2% | 100.0% |
+| lower-level clear capture | off | **18.8%** | 100.0% |
+| lower-level clear capture | old 0.10 RMS target | 43.8% | 100.0% |
+| lower-level clear capture | new 0.03 RMS target + silence gate | **18.8%** | 100.0% |
+
+The old policy learned maximum gain from silent pre-roll and normalized normal
+speech too aggressively. Gain now starts at unity, sub-noise-floor chunks do
+not raise it, and the default target is 0.03 RMS. This preserves the clear
+capture while keeping bounded amplification available for genuinely quiet
+speech. The remaining English error was `frequently` becoming `frequent`; a
+single prompt is too little evidence for changing decoder or model defaults.
+
 ## Punctuation
 
 `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8`, loaded
@@ -167,8 +188,11 @@ capture choice, not recognition latency, and it is settable.
 ```sh
 nix build
 ./result/bin/voice-input-asr-bench ~/voice-input-corpus/manifest.tsv
+./result/bin/voice-input-asr-bench --adaptive-gain --max-gain 8 \
+    --target-rms 0.03 ~/voice-input-corpus/manifest.tsv
 ./result/bin/voice-input-asr-bench --model ~/models/candidate \
-    --decoder modified_beam_search --threads 4 ~/voice-input-corpus/manifest.tsv
+    --decoder modified_beam_search --threads 4 --max-active-paths 4 \
+    ~/voice-input-corpus/manifest.tsv
 ```
 
 A manifest line is `path<TAB>tags<TAB>reference`; a reference of `-` times a

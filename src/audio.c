@@ -103,7 +103,11 @@ float vi_audio_apply_gain(float *samples, size_t count, float current_gain,
         squares += (double)samples[i] * (double)samples[i];
     }
     const float rms = (float)sqrt(squares / (double)count);
-    float desired = rms > 0.0001F ? target_rms / rms : max_gain;
+    /* Do not learn a high gain from pre-roll silence.  Starting a recording
+       used to feed amplified room noise to the recognizer and then snap the
+       gain down on the first syllable.  Treat sub-noise-floor chunks as
+       silence; real quiet speech still clears this deliberately low gate. */
+    float desired = rms >= 0.005F ? target_rms / rms : 1.0F;
     desired = fmaxf(1.0F, fminf(desired, max_gain));
     if (peak > 0.0F) desired = fminf(desired, 0.98F / peak);
 
@@ -523,9 +527,9 @@ struct vi_audio *vi_audio_create(vi_level_callback callback, void *userdata) {
                 audio->wanted);
     }
     audio->max_gain = environment_float("VOICE_INPUT_MAX_GAIN", 6.0F, 1.0F, 16.0F);
-    audio->target_rms = environment_float("VOICE_INPUT_TARGET_RMS", 0.08F,
+    audio->target_rms = environment_float("VOICE_INPUT_TARGET_RMS", 0.03F,
                                           0.01F, 0.30F);
-    audio->gain = audio->max_gain;
+    audio->gain = 1.0F;
     audio->preroll_ms = (long)environment_float("VOICE_INPUT_PREROLL_MS", 0.0F,
                                                 0.0F, 3000.0F);
     if (audio->preroll_ms > 0L) {
@@ -582,7 +586,7 @@ static void rewind_to_preroll(struct vi_audio *audio) {
 int vi_audio_start(struct vi_audio *audio) {
     if (audio == NULL) return -1;
     audio->recording = true;
-    audio->gain = audio->max_gain;
+    audio->gain = 1.0F;
     if (audio->active) {
         /* Capture never stopped, so the ring already holds what was said just
            before the trigger. Rewinding into it hides the whole start-up path -

@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     const int chunk_size = 1600;
-    float gain = quiet_test ? 8.0F : 1.0F;
+    float gain = 1.0F;
     for (int offset = 0; offset < wave->num_samples; offset += chunk_size) {
         int count = wave->num_samples - offset;
         if (count > chunk_size) count = chunk_size;
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
             chunk[i] = wave->samples[offset + i] * (quiet_test ? 0.04F : 1.0F);
         }
         if (quiet_test) {
-            gain = vi_audio_apply_gain(chunk, (size_t)count, gain, 8.0F, 0.10F);
+            gain = vi_audio_apply_gain(chunk, (size_t)count, gain, 8.0F, 0.03F);
         }
         if (vi_asr_accept(asr, chunk, (size_t)count) < 0) {
             vi_asr_destroy(asr);

@@ -93,11 +93,23 @@ private:
         if (context != nullptr) {
             context->commitString(text);
             return true;
-        } else {
-            FCITX_LOGC(voiceInputLog, Warn)
-                << "No focused input context; transcript was not committed";
-            return false;
         }
+        return false;
+    }
+
+    enum class CommitResult { Success, NoFocus, TimedOut };
+
+    CommitResult dispatchCommit(const std::string &text) {
+        auto completion = std::make_shared<std::promise<bool>>();
+        std::future<bool> result = completion->get_future();
+        dispatcher_.schedule([this, text, completion]() mutable {
+            completion->set_value(commit(std::move(text)));
+        });
+        if (result.wait_for(std::chrono::milliseconds(250)) !=
+            std::future_status::ready) {
+            return CommitResult::TimedOut;
+        }
+        return result.get() ? CommitResult::Success : CommitResult::NoFocus;
     }
 
     void handle(int client) {
@@ -107,14 +119,32 @@ private:
         if (length == 0 || length > 65535U) return;
         std::string text(length, '\0');
         if (!receiveAll(client, text.data(), text.size())) return;
-        auto completion = std::make_shared<std::promise<bool>>();
-        std::future<bool> result = completion->get_future();
-        dispatcher_.schedule([this, text = std::move(text), completion]() mutable {
-            completion->set_value(commit(std::move(text)));
-        });
-        const bool committed = result.wait_for(std::chrono::seconds(1)) ==
-                                   std::future_status::ready &&
-                               result.get();
+        /* A global shortcut or a closing popup can leave KWin/Fcitx without a
+           focused input context for a few frames.  The transcript is already
+           final at this point, so retry for a bounded 420 ms before reporting
+           failure.  Each lookup still happens on the Fcitx event loop; the
+           listener thread sleeps between attempts and never blocks focus
+           events. */
+        static constexpr int retryDelayMs[] = {0, 60, 120, 240};
+        bool committed = false;
+        for (int delay : retryDelayMs) {
+            if (delay > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+            }
+            const CommitResult result = dispatchCommit(text);
+            if (result == CommitResult::Success) {
+                committed = true;
+                break;
+            }
+            /* An event-loop timeout leaves an attempt scheduled. Retrying
+               could then commit the same transcript twice when it wakes. */
+            if (result == CommitResult::TimedOut) break;
+        }
+        if (!committed) {
+            FCITX_LOGC(voiceInputLog, Warn)
+                << "No focused input context after bounded retry; transcript "
+                   "was not committed";
+        }
         const unsigned char acknowledgment = committed ? 1 : 0;
         (void)send(client, &acknowledgment, 1, MSG_NOSIGNAL);
     }
