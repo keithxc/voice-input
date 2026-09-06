@@ -28,8 +28,9 @@ The first usable milestone includes:
 - a `sources` command reporting every discovered capture node with its state,
   level, noise floor, and score;
 - a native Fcitx5 addon that commits final text to the focused application;
-- systemd user services, a Nix package, and automated protocol, integration,
-  adaptive-gain, UI-model, QML rendering, normal-ASR, and quiet-ASR tests.
+- systemd user services, a Nix package, and automated protocol, source-selection,
+  integration, adaptive-gain, UI-model, QML rendering, normal-ASR, and quiet-ASR
+  tests.
 
 No placeholder transcript is emitted: UI text and state come from the daemon's
 real event stream.
@@ -50,7 +51,9 @@ ratio, useful signal level, and clipping. The daemon sends only the clearest
 source to ASR and uses a margin, consecutive votes, and a cooldown before
 switching. Selection is bootstrapped on the first source that delivers buffers,
 however quiet, so a low-output built-in microphone still reaches the recogniser;
-the quality thresholds then apply only to switching away from it. Once speech begins, the chosen source is held through short pauses
+the quality thresholds then apply only to switching away from it. The arbitration
+rules live in `src/selection.c` as a pure function over plain source statistics,
+so they are unit tested without an audio server. Once speech begins, the chosen source is held through short pauses
 so an utterance cannot be split by quality fluctuations. Newly connected USB
 or Bluetooth microphones are discovered without configuration; unavailable
 sources are skipped. Unrelated devices are not

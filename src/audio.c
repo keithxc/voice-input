@@ -3,6 +3,7 @@
 #include "audio.h"
 
 #include "protocol.h"
+#include "selection.h"
 
 #include <math.h>
 #include <pipewire/pipewire.h>
@@ -18,11 +19,6 @@
 
 #define VI_MAX_SOURCES 16U
 #define VI_RING_SAMPLES 65536U
-#define VI_SWITCH_MARGIN 6.0F
-#define VI_SWITCH_VOTES 8U
-#define VI_SWITCH_COOLDOWN_MS 1000L
-#define VI_SPEECH_SOURCE_HOLD_MS 1200L
-#define VI_SWITCH_MIN_RMS 0.001F
 
 struct vi_audio;
 
@@ -50,11 +46,7 @@ struct vi_audio {
     void *userdata;
     bool active;
     struct vi_source sources[VI_MAX_SOURCES];
-    struct vi_source *selected;
-    struct vi_source *candidate;
-    unsigned candidate_votes;
-    struct timespec last_switch;
-    struct timespec last_selected_speech;
+    struct vi_selection selection;
     float samples[VI_RING_SAMPLES];
     atomic_size_t read_index;
     atomic_size_t write_index;
@@ -108,79 +100,48 @@ float vi_audio_quality_score(float rms, float noise_floor, float clipping_ratio)
     return 2.0F * snr_db + 0.5F * useful_level - 200.0F * clipping_ratio;
 }
 
-static long elapsed_ms(const struct timespec *now, const struct timespec *then) {
-    return (now->tv_sec - then->tv_sec) * 1000L +
-           (now->tv_nsec - then->tv_nsec) / 1000000L;
+static long now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * 1000L + now.tv_nsec / 1000000L;
 }
 
-static void select_source(struct vi_audio *audio, struct vi_source *source) {
-    if (audio->selected == source) return;
-    audio->selected = source;
-    audio->candidate = NULL;
-    audio->candidate_votes = 0U;
-    clock_gettime(CLOCK_MONOTONIC, &audio->last_switch);
-    audio->last_selected_speech = audio->last_switch;
-    const size_t write_index = atomic_load_explicit(&audio->write_index,
-                                                    memory_order_acquire);
-    atomic_store_explicit(&audio->read_index, write_index, memory_order_release);
-    fprintf(stderr, "voice-inputd: selected audio source: %s\n",
-            source != NULL ? source->description : "none");
+static struct vi_source *selected_source(struct vi_audio *audio) {
+    return audio->selection.selected != VI_NO_SOURCE
+               ? &audio->sources[audio->selection.selected]
+               : NULL;
 }
 
-static struct vi_source *best_source(struct vi_audio *audio, bool require_signal) {
-    struct vi_source *best = NULL;
+static void collect_stats(const struct vi_audio *audio,
+                          struct vi_source_stats *stats) {
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
-        struct vi_source *source = &audio->sources[i];
-        if (source->id == SPA_ID_INVALID || source->stream == NULL ||
-            source->state != PW_STREAM_STATE_STREAMING || source->chunks == 0U) {
-            continue;
-        }
-        if (require_signal &&
-            (source->chunks < 4U || source->rms < VI_SWITCH_MIN_RMS)) {
-            continue;
-        }
-        if (best == NULL || source->score > best->score) best = source;
+        const struct vi_source *source = &audio->sources[i];
+        stats[i].present = source->id != SPA_ID_INVALID && source->stream != NULL;
+        stats[i].streaming = source->state == PW_STREAM_STATE_STREAMING;
+        stats[i].chunks = source->chunks;
+        stats[i].rms = source->rms;
+        stats[i].score = source->score;
     }
-    return best;
 }
 
 static void consider_source_switch(struct vi_audio *audio,
                                    struct vi_source *updated) {
-    if (audio->selected == NULL || audio->selected->stream == NULL ||
-        audio->selected->state == PW_STREAM_STATE_ERROR ||
-        audio->selected->state == PW_STREAM_STATE_UNCONNECTED) {
-        /* Bootstrap on any source that is delivering buffers, however quiet.
-           Requiring a signal here would deadlock on low-output built-in
-           microphones (AMD ACP/SOF digital mics idle well below the switching
-           threshold): nothing would ever be selected, so the ring buffer would
-           stay empty and the recogniser would never see a single sample. */
-        struct vi_source *bootstrap = best_source(audio, false);
-        if (bootstrap != NULL) select_source(audio, bootstrap);
-        return;
-    }
-    struct vi_source *best = best_source(audio, true);
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    if (elapsed_ms(&now, &audio->last_selected_speech) <
-        VI_SPEECH_SOURCE_HOLD_MS) {
-        audio->candidate = NULL;
-        audio->candidate_votes = 0U;
-        return;
-    }
-    if (best == NULL || best == audio->selected ||
-        best->score < audio->selected->score + VI_SWITCH_MARGIN) {
-        audio->candidate = NULL;
-        audio->candidate_votes = 0U;
-        return;
-    }
-    if (elapsed_ms(&now, &audio->last_switch) < VI_SWITCH_COOLDOWN_MS) return;
-    if (updated != best) return;
-    if (audio->candidate != best) {
-        audio->candidate = best;
-        audio->candidate_votes = 1U;
-    } else if (++audio->candidate_votes >= VI_SWITCH_VOTES) {
-        select_source(audio, best);
-    }
+    struct vi_source_stats stats[VI_MAX_SOURCES];
+    collect_stats(audio, stats);
+    const int previous = audio->selection.selected;
+    const int chosen = vi_selection_update(&audio->selection, stats,
+                                           VI_MAX_SOURCES,
+                                           (int)(updated - audio->sources),
+                                           now_ms());
+    if (chosen == previous) return;
+
+    /* Drop what the previous source left buffered so one utterance is never
+       stitched together from two microphones. */
+    const size_t write_index = atomic_load_explicit(&audio->write_index,
+                                                    memory_order_acquire);
+    atomic_store_explicit(&audio->read_index, write_index, memory_order_release);
+    fprintf(stderr, "voice-inputd: selected audio source: %s\n",
+            chosen != VI_NO_SOURCE ? audio->sources[chosen].description : "none");
 }
 
 static void queue_selected_samples(struct vi_source *source, const uint8_t *data,
@@ -209,7 +170,9 @@ static void on_stream_state_changed(void *data, enum pw_stream_state old,
     if (state == PW_STREAM_STATE_ERROR) {
         fprintf(stderr, "voice-inputd: source %s unavailable: %s\n",
                 source->description, error != NULL ? error : "unknown error");
-        if (source->audio->selected == source) source->audio->selected = NULL;
+        if (selected_source(source->audio) == source) {
+            source->audio->selection.selected = VI_NO_SOURCE;
+        }
     }
 }
 
@@ -255,13 +218,13 @@ static void on_stream_process(void *data) {
                 source->rms, source->noise_floor,
                 (float)clipped / (float)count);
             ++source->chunks;
-            if (source->audio->selected == source && source->rms >= 0.003F &&
+            if (selected_source(source->audio) == source &&
+                source->rms >= 0.003F &&
                 source->rms >= 2.0F * source->noise_floor) {
-                clock_gettime(CLOCK_MONOTONIC,
-                              &source->audio->last_selected_speech);
+                source->audio->selection.last_speech_ms = now_ms();
             }
             consider_source_switch(source->audio, source);
-            if (source->audio->selected == source) {
+            if (selected_source(source->audio) == source) {
                 queue_selected_samples(source, samples, count, stride);
             }
         }
@@ -374,8 +337,13 @@ static void on_registry_global_remove(void *data, uint32_t id) {
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
         struct vi_source *source = &audio->sources[i];
         if (source->id != id) continue;
-        if (audio->selected == source) audio->selected = NULL;
-        if (audio->candidate == source) audio->candidate = NULL;
+        if (audio->selection.selected == (int)i) {
+            audio->selection.selected = VI_NO_SOURCE;
+        }
+        if (audio->selection.candidate == (int)i) {
+            audio->selection.candidate = VI_NO_SOURCE;
+            audio->selection.candidate_votes = 0U;
+        }
         stop_source(source);
         memset(source, 0, sizeof(*source));
         source->id = SPA_ID_INVALID;
@@ -394,6 +362,7 @@ struct vi_audio *vi_audio_create(vi_level_callback callback, void *userdata) {
     struct vi_audio *audio = calloc(1, sizeof(*audio));
     if (audio == NULL) return NULL;
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) audio->sources[i].id = SPA_ID_INVALID;
+    vi_selection_reset(&audio->selection);
     audio->loop = pw_main_loop_new(NULL);
     if (audio->loop == NULL) goto fail;
     audio->context = pw_context_new(pw_main_loop_get_loop(audio->loop), NULL, 0U);
@@ -425,9 +394,7 @@ void vi_audio_stop(struct vi_audio *audio) {
     if (audio == NULL) return;
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) stop_source(&audio->sources[i]);
     audio->active = false;
-    audio->selected = NULL;
-    audio->candidate = NULL;
-    audio->candidate_votes = 0U;
+    vi_selection_reset(&audio->selection);
 }
 
 void vi_audio_destroy(struct vi_audio *audio) {
@@ -446,6 +413,7 @@ int vi_audio_start(struct vi_audio *audio) {
     if (audio->active) return 0;
     audio->active = true;
     audio->gain = audio->max_gain;
+    vi_selection_reset(&audio->selection);
     atomic_store_explicit(&audio->read_index, 0U, memory_order_relaxed);
     atomic_store_explicit(&audio->write_index, 0U, memory_order_relaxed);
     int started = 0;
@@ -508,8 +476,8 @@ bool vi_audio_is_active(const struct vi_audio *audio) {
 }
 
 const char *vi_audio_selected_source(const struct vi_audio *audio) {
-    return audio != NULL && audio->selected != NULL
-               ? audio->selected->description
+    return audio != NULL && audio->selection.selected != VI_NO_SOURCE
+               ? audio->sources[audio->selection.selected].description
                : "";
 }
 
@@ -569,7 +537,7 @@ int vi_audio_describe_sources(const struct vi_audio *audio, char *buffer,
                                : "idle",
                            source->chunks, (double)source->rms,
                            (double)source->noise_floor, (double)source->score,
-                           audio->selected == source ? "true" : "false");
+                           audio->selection.selected == (int)i ? "true" : "false");
         if (written < 0 || (size_t)written >= size - used) return -1;
         used += (size_t)written;
         first = false;
