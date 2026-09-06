@@ -21,9 +21,10 @@ and optional AMD XDNA2 acceleration.
   non-focusable Qt6/QML layer-shell overlay
 - Test the overlay event model and render the real QML in a headless smoke test
 
-Checkpoint: `nix build` passes protocol, daemon integration, UI-model, QML
-rendering, and real-model decoding tests; a live session emits microphone level
-events and the overlay stays above normal Plasma windows without taking focus.
+Checkpoint: `nix build` passes protocol, daemon integration, adaptive-gain,
+UI-model, QML rendering, normal-ASR, and 4%-volume quiet-ASR decoding tests; a
+live session emits microphone level events and the overlay stays above normal
+Plasma windows without taking focus.
 
 ## v0.2 — Desktop integration and measurement
 

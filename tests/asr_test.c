@@ -1,4 +1,5 @@
 #include "asr.h"
+#include "audio.h"
 
 #include <sherpa-onnx/c-api/c-api.h>
 #include <stdbool.h>
@@ -17,7 +18,9 @@ static void on_transcript(const char *event, const char *text, void *userdata) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) return EXIT_FAILURE;
+    if (argc < 2 || argc > 3) return EXIT_FAILURE;
+    const bool quiet_test = argc == 3 && strcmp(argv[2], "--quiet") == 0;
+    if (argc == 3 && !quiet_test) return EXIT_FAILURE;
     char wav_path[4096];
     int written = snprintf(wav_path, sizeof(wav_path), "%s/test_wavs/2.wav", argv[1]);
     if (written < 0 || (size_t)written >= sizeof(wav_path)) return EXIT_FAILURE;
@@ -33,10 +36,18 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     const int chunk_size = 1600;
+    float gain = quiet_test ? 8.0F : 1.0F;
     for (int offset = 0; offset < wave->num_samples; offset += chunk_size) {
         int count = wave->num_samples - offset;
         if (count > chunk_size) count = chunk_size;
-        if (vi_asr_accept(asr, wave->samples + offset, (size_t)count) < 0) {
+        float chunk[1600];
+        for (int i = 0; i < count; ++i) {
+            chunk[i] = wave->samples[offset + i] * (quiet_test ? 0.04F : 1.0F);
+        }
+        if (quiet_test) {
+            gain = vi_audio_apply_gain(chunk, (size_t)count, gain, 8.0F, 0.10F);
+        }
+        if (vi_asr_accept(asr, chunk, (size_t)count) < 0) {
             vi_asr_destroy(asr);
             SherpaOnnxFreeWave(wave);
             return EXIT_FAILURE;

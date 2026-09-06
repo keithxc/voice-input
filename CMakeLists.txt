@@ -73,6 +73,10 @@ if(BUILD_TESTING)
   add_test(NAME integration
     COMMAND "${BASH_PROGRAM}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.sh"
             "$<TARGET_FILE:voice-inputd>" "$<TARGET_FILE:voice-inputctl>")
+  add_executable(audio-gain-test tests/audio_gain_test.c src/audio.c)
+  target_include_directories(audio-gain-test PRIVATE src)
+  target_link_libraries(audio-gain-test PRIVATE PkgConfig::PIPEWIRE m)
+  add_test(NAME audio-gain COMMAND audio-gain-test)
   qt_add_executable(overlay-model-test
     tests/overlay_model_test.cpp
     overlay/overlay_model.cpp
@@ -112,10 +116,14 @@ if(BUILD_TESTING)
       --demo --screenshot "${CMAKE_CURRENT_BINARY_DIR}/overlay-smoke.png")
   set_tests_properties(overlay-qml-smoke PROPERTIES TIMEOUT 10)
   if(VOICE_INPUT_TEST_MODEL_DIR)
-    add_executable(asr-test tests/asr_test.c src/asr.c)
+    add_executable(asr-test tests/asr_test.c src/asr.c src/audio.c)
     target_include_directories(asr-test PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")
-    target_link_libraries(asr-test PRIVATE "${SHERPA_ONNX_C_API}")
+    target_link_libraries(asr-test PRIVATE
+      "${SHERPA_ONNX_C_API}" PkgConfig::PIPEWIRE m)
     add_test(NAME asr-model COMMAND asr-test "${VOICE_INPUT_TEST_MODEL_DIR}")
+    add_test(NAME asr-quiet-model
+      COMMAND asr-test "${VOICE_INPUT_TEST_MODEL_DIR}" --quiet)
     set_tests_properties(asr-model PROPERTIES TIMEOUT 60)
+    set_tests_properties(asr-quiet-model PROPERTIES TIMEOUT 60)
   endif()
 endif()

@@ -14,6 +14,7 @@ The first usable milestone includes:
 
 - a persistent C17 daemon with zero audio processing while idle;
 - native PipeWire capture at 16 kHz, mono, signed 16-bit PCM;
+- bounded adaptive input gain for quiet speech, with peak limiting;
 - a local Unix socket command/event protocol;
 - start, stop, toggle, status, monitor, and clean shutdown commands;
 - throttled real-time RMS level events;
@@ -23,10 +24,20 @@ The first usable milestone includes:
   recognition, partial text, audio level, commit success, and output errors;
 - a native Fcitx5 addon that commits final text to the focused application;
 - systemd user services, a Nix package, and automated protocol, integration,
-  UI-model, QML rendering, and real-model tests.
+  adaptive-gain, UI-model, QML rendering, normal-ASR, and quiet-ASR tests.
 
 No placeholder transcript is emitted: UI text and state come from the daemon's
 real event stream.
+
+Quiet-speech sensitivity can be tuned without rebuilding. The defaults are a
+maximum gain of `6.0` and a target RMS of `0.08`:
+
+```sh
+VOICE_INPUT_MAX_GAIN=8 VOICE_INPUT_TARGET_RMS=0.10 voice-inputd
+```
+
+Higher values hear softer speech but also amplify room noise. Accepted ranges
+are `1..16` for maximum gain and `0.01..0.30` for target RMS.
 
 ## Build
 
