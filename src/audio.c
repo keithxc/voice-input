@@ -47,12 +47,19 @@ struct vi_audio {
     bool active;
     struct vi_source sources[VI_MAX_SOURCES];
     struct vi_selection selection;
+    /* Lossy ring: the capture thread only ever publishes write_position, and the
+       reader owns read_position, so neither blocks the other. Positions are
+       monotonic sample counts rather than wrapped indices, which makes an
+       overrun and a pre-roll rewind the same clamp. */
     float samples[VI_RING_SAMPLES];
-    atomic_size_t read_index;
-    atomic_size_t write_index;
+    atomic_uint_least64_t write_position;
+    atomic_uint_least64_t boundary_position;
+    uint64_t read_position;
     float gain;
     float max_gain;
     float target_rms;
+    long preroll_ms;
+    bool recording;
 };
 
 static float environment_float(const char *name, float fallback,
@@ -135,11 +142,12 @@ static void consider_source_switch(struct vi_audio *audio,
                                            now_ms());
     if (chosen == previous) return;
 
-    /* Drop what the previous source left buffered so one utterance is never
-       stitched together from two microphones. */
-    const size_t write_index = atomic_load_explicit(&audio->write_index,
-                                                    memory_order_acquire);
-    atomic_store_explicit(&audio->read_index, write_index, memory_order_release);
+    /* Nothing recorded before the switch may be replayed, so one utterance is
+       never stitched together from two microphones. */
+    atomic_store_explicit(&audio->boundary_position,
+                          atomic_load_explicit(&audio->write_position,
+                                               memory_order_acquire),
+                          memory_order_release);
     fprintf(stderr, "voice-inputd: selected audio source: %s\n",
             chosen != VI_NO_SOURCE ? audio->sources[chosen].description : "none");
 }
@@ -147,19 +155,17 @@ static void consider_source_switch(struct vi_audio *audio,
 static void queue_selected_samples(struct vi_source *source, const uint8_t *data,
                                    size_t count, size_t stride, bool silent) {
     struct vi_audio *audio = source->audio;
-    size_t write_index = atomic_load_explicit(&audio->write_index,
-                                              memory_order_relaxed);
-    const size_t read_index = atomic_load_explicit(&audio->read_index,
-                                                   memory_order_acquire);
+    uint64_t write_position = atomic_load_explicit(&audio->write_position,
+                                                   memory_order_relaxed);
     for (size_t i = 0; i < count; ++i) {
         int16_t sample = 0;
         if (!silent) memcpy(&sample, data + i * stride, sizeof(sample));
-        const size_t next = (write_index + 1U) % VI_RING_SAMPLES;
-        if (next == read_index) break;
-        audio->samples[write_index] = (float)((double)sample / 32768.0);
-        write_index = next;
+        audio->samples[write_position % VI_RING_SAMPLES] =
+            (float)((double)sample / 32768.0);
+        ++write_position;
     }
-    atomic_store_explicit(&audio->write_index, write_index, memory_order_release);
+    atomic_store_explicit(&audio->write_position, write_position,
+                          memory_order_release);
 }
 
 static void on_stream_state_changed(void *data, enum pw_stream_state old,
@@ -387,6 +393,16 @@ struct vi_audio *vi_audio_create(vi_level_callback callback, void *userdata) {
     audio->target_rms = environment_float("VOICE_INPUT_TARGET_RMS", 0.08F,
                                           0.01F, 0.30F);
     audio->gain = audio->max_gain;
+    audio->preroll_ms = (long)environment_float("VOICE_INPUT_PREROLL_MS", 0.0F,
+                                                0.0F, 3000.0F);
+    if (audio->preroll_ms > 0L) {
+        /* Sources discovered from now on start capturing immediately, so the
+           ring is always warm. This holds the microphone open for as long as the
+           daemon runs, which is why it is opt-in. */
+        audio->active = true;
+        fprintf(stderr, "voice-inputd: pre-roll enabled (%ld ms); the microphone "
+                        "stays open while the daemon runs\n", audio->preroll_ms);
+    }
     return audio;
 
 fail:
@@ -400,6 +416,8 @@ fail:
 
 void vi_audio_stop(struct vi_audio *audio) {
     if (audio == NULL) return;
+    audio->recording = false;
+    if (audio->preroll_ms > 0L) return;  /* keep capturing to preserve pre-roll */
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) stop_source(&audio->sources[i]);
     audio->active = false;
     vi_selection_reset(&audio->selection);
@@ -416,14 +434,30 @@ void vi_audio_destroy(struct vi_audio *audio) {
     pw_deinit();
 }
 
+static void rewind_to_preroll(struct vi_audio *audio) {
+    const uint64_t write_position = atomic_load_explicit(&audio->write_position,
+                                                         memory_order_acquire);
+    const uint64_t boundary = atomic_load_explicit(&audio->boundary_position,
+                                                   memory_order_acquire);
+    uint64_t wanted = (uint64_t)audio->preroll_ms * 16U;  /* 16 kHz mono */
+    if (wanted > VI_RING_SAMPLES) wanted = VI_RING_SAMPLES;
+    const uint64_t earliest = write_position > wanted ? write_position - wanted : 0U;
+    audio->read_position = earliest > boundary ? earliest : boundary;
+}
+
 int vi_audio_start(struct vi_audio *audio) {
     if (audio == NULL) return -1;
-    if (audio->active) return 0;
-    audio->active = true;
+    audio->recording = true;
     audio->gain = audio->max_gain;
+    if (audio->active) {
+        /* Capture never stopped, so the ring already holds what was said just
+           before the trigger. Rewinding into it hides the whole start-up path -
+           hotkey dispatch, stream negotiation - from the recogniser. */
+        rewind_to_preroll(audio);
+        return 0;
+    }
+    audio->active = true;
     vi_selection_reset(&audio->selection);
-    atomic_store_explicit(&audio->read_index, 0U, memory_order_relaxed);
-    atomic_store_explicit(&audio->write_index, 0U, memory_order_relaxed);
     int started = 0;
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
         if (audio->sources[i].id != SPA_ID_INVALID &&
@@ -447,15 +481,22 @@ int vi_audio_iterate(struct vi_audio *audio, int timeout_ms) {
 
 size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity) {
     if (audio == NULL || samples == NULL) return 0U;
-    size_t read_index = atomic_load_explicit(&audio->read_index, memory_order_relaxed);
-    const size_t write_index = atomic_load_explicit(&audio->write_index,
-                                                    memory_order_acquire);
-    size_t count = 0U;
-    while (read_index != write_index && count < capacity) {
-        samples[count++] = audio->samples[read_index];
-        read_index = (read_index + 1U) % VI_RING_SAMPLES;
+    const uint64_t write_position = atomic_load_explicit(&audio->write_position,
+                                                         memory_order_acquire);
+    const uint64_t boundary = atomic_load_explicit(&audio->boundary_position,
+                                                   memory_order_acquire);
+    if (audio->read_position < boundary) audio->read_position = boundary;
+    if (write_position - audio->read_position > VI_RING_SAMPLES) {
+        /* The reader fell further behind than the ring holds; keep the newest
+           audio rather than replaying what has already been overwritten. */
+        audio->read_position = write_position - VI_RING_SAMPLES;
     }
-    atomic_store_explicit(&audio->read_index, read_index, memory_order_release);
+    size_t count = (size_t)(write_position - audio->read_position);
+    if (count > capacity) count = capacity;
+    for (size_t i = 0; i < count; ++i) {
+        samples[i] = audio->samples[(audio->read_position + i) % VI_RING_SAMPLES];
+    }
+    audio->read_position += count;
     if (count > 0U) {
         audio->gain = vi_audio_apply_gain(samples, count, audio->gain,
                                           audio->max_gain, audio->target_rms);
@@ -472,7 +513,7 @@ size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity) {
 
 const char *vi_audio_state(const struct vi_audio *audio) {
     if (audio == NULL) return "disabled";
-    if (!audio->active) return "idle";
+    if (!audio->recording) return "idle";
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
         if (audio->sources[i].state == PW_STREAM_STATE_STREAMING) return "streaming";
     }
@@ -480,7 +521,7 @@ const char *vi_audio_state(const struct vi_audio *audio) {
 }
 
 bool vi_audio_is_active(const struct vi_audio *audio) {
-    return audio != NULL && audio->active;
+    return audio != NULL && audio->recording;
 }
 
 const char *vi_audio_selected_source(const struct vi_audio *audio) {

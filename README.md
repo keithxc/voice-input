@@ -45,6 +45,19 @@ VOICE_INPUT_MAX_GAIN=8 VOICE_INPUT_TARGET_RMS=0.10 voice-inputd
 Higher values hear softer speech but also amplify room noise. Accepted ranges
 are `1..16` for maximum gain and `0.01..0.30` for target RMS.
 
+The first words of an utterance are easy to lose, because a hotkey press has to
+travel through the desktop's shortcut dispatch and a capture stream has to be
+negotiated before a single sample exists. `VOICE_INPUT_PREROLL_MS` closes that
+gap by keeping the ring buffer warm and rewinding into it when recording starts:
+
+```sh
+VOICE_INPUT_PREROLL_MS=1000 voice-inputd
+```
+
+It is off by default because it holds the microphone open for as long as the
+daemon runs, which desktop environments show as continuous recording. Accepted
+range is `0..3000` ms; audio older than the ring's 4 seconds cannot be recovered.
+
 While recording, every available PipeWire `Audio/Source` is opened as a shared
 capture stream. Each stream is scored independently using speech-to-noise
 ratio, useful signal level, and clipping. The daemon sends only the clearest
@@ -125,6 +138,22 @@ For a control-path test without a microphone or PipeWire session:
 ./build/voice-inputd --no-audio --socket /tmp/voice-input-test/voice-input.sock
 ./build/voice-inputctl --socket /tmp/voice-input-test/voice-input.sock toggle
 ```
+
+## Development
+
+`scripts/dev-session.sh` swaps the installed user services for a local build in
+the running desktop session, inheriting the model path and tuning from the
+service it replaces, and restores them on exit. It needs no reinstall:
+
+```sh
+cmake --build build
+./scripts/dev-session.sh
+```
+
+`VOICE_INPUT_DEBUG_TIMING` (which that script sets) stamps the start command,
+the first audio into the recogniser, every partial and final, the text commit,
+and a throughput ratio, so a perceived delay can be attributed rather than
+guessed at.
 
 ## Architecture
 
