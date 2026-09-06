@@ -33,6 +33,7 @@ struct app {
     bool first_audio_logged;
     size_t accepted_samples;
     long last_throughput_ms;
+    long tail_until_ms;
     struct timespec last_level_sent;
     char selected_source[256];
 };
@@ -155,7 +156,33 @@ static void broadcast_state(struct app *app, const char *event) {
     broadcast(app, message);
 }
 
+/* Speech trails off, so cutting capture the instant the hotkey is released
+   clips the last syllable. Keep recording for a short tail and only then let the
+   recogniser finalise. */
+static long tail_ms = 250L;
+
+static void finish_recording(struct app *app) {
+    if (!app->no_audio) {
+        vi_audio_stop(app->audio);
+        vi_asr_finish(app->asr);
+    }
+    app->recording = false;
+    app->tail_until_ms = 0L;
+    timing_log("recording finished");
+    broadcast_state(app, "state");
+}
+
+static void maybe_finish_recording(struct app *app) {
+    if (app->tail_until_ms == 0L || monotonic_ms() < app->tail_until_ms) return;
+    finish_recording(app);
+}
+
 static int set_recording(struct app *app, bool recording) {
+    if (recording && app->tail_until_ms != 0L) {
+        app->tail_until_ms = 0L;  /* speaking again during the tail: carry on */
+        broadcast_state(app, "state");
+        return 0;
+    }
     if (recording == app->recording) {
         broadcast_state(app, "state");
         return 0;
@@ -166,18 +193,24 @@ static int set_recording(struct app *app, bool recording) {
         app->accepted_samples = 0U;
         app->last_throughput_ms = 0L;
         timing_log("start command accepted");
+        if (!app->no_audio && vi_audio_start(app->audio) < 0) {
+            broadcast(app,
+                      "{\"event\":\"error\",\"message\":\"pipewire-start-failed\"}\n");
+            return -1;
+        }
+        timing_log("capture streams requested");
+        app->recording = true;
+        broadcast_state(app, "state");
+        return 0;
     }
-    if (recording && !app->no_audio && vi_audio_start(app->audio) < 0) {
-        broadcast(app, "{\"event\":\"error\",\"message\":\"pipewire-start-failed\"}\n");
-        return -1;
+    if (tail_ms > 0L && !app->no_audio) {
+        /* Stay in the recording state until the tail is in, so the panel does
+           not announce a result the recogniser has not produced yet. */
+        app->tail_until_ms = monotonic_ms() + tail_ms;
+        timing_log("stop accepted; capturing a %ld ms tail", tail_ms);
+        return 0;
     }
-    if (!recording && !app->no_audio) {
-        vi_audio_stop(app->audio);
-        vi_asr_finish(app->asr);
-    }
-    if (recording) timing_log("capture streams requested");
-    app->recording = recording;
-    broadcast_state(app, "state");
+    finish_recording(app);
     return 0;
 }
 
@@ -356,6 +389,12 @@ int main(int argc, char **argv) {
     }
     bool no_audio = false;
     debug_timing = getenv("VOICE_INPUT_DEBUG_TIMING") != NULL;
+    const char *tail_setting = getenv("VOICE_INPUT_TAIL_MS");
+    if (tail_setting != NULL && tail_setting[0] != '\0') {
+        char *end = NULL;
+        const long parsed = strtol(tail_setting, &end, 10);
+        if (*end == '\0' && parsed >= 0L && parsed <= 2000L) tail_ms = parsed;
+    }
     const char *model_directory = getenv("VOICE_INPUT_MODEL_DIR");
     int asr_threads = 2;
     for (int i = 1; i < argc; ++i) {
@@ -381,7 +420,7 @@ int main(int argc, char **argv) {
     struct app app = { .server_fd = -1, .audio = NULL, .asr = NULL,
                        .no_audio = no_audio,
                        .recording = false, .running = true, .pending_level = -1.0F,
-                       .first_audio_logged = false };
+                       .first_audio_logged = false, .tail_until_ms = 0L };
     for (size_t i = 0; i < MAX_CLIENTS; ++i) app.clients[i] = -1;
     if (!no_audio) {
         app.audio = vi_audio_create(on_level, &app);
@@ -422,6 +461,7 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
         process_audio(&app);
+        maybe_finish_recording(&app);
         maybe_log_throughput(&app);
         maybe_broadcast_source(&app);
         maybe_broadcast_level(&app);

@@ -27,6 +27,7 @@ The first usable milestone includes:
   treatment and a softer rounded GNOME treatment selected automatically;
 - a `sources` command reporting every discovered capture node with its state,
   level, noise floor, and score;
+- an opt-in pre-roll and a trailing tail so neither end of an utterance is cut;
 - a native Fcitx5 addon that commits final text to the focused application;
 - systemd user services, a Nix package, and automated protocol, source-selection,
   integration, adaptive-gain, UI-model, QML rendering, normal-ASR, and quiet-ASR
@@ -57,6 +58,11 @@ VOICE_INPUT_PREROLL_MS=1000 voice-inputd
 It is off by default because it holds the microphone open for as long as the
 daemon runs, which desktop environments show as continuous recording. Accepted
 range is `0..3000` ms; audio older than the ring's 4 seconds cannot be recovered.
+
+Speech also trails off at the end, so capture continues for a short tail after
+the stop command before the recogniser finalises. `VOICE_INPUT_TAIL_MS` sets it,
+defaulting to `250`; `0` finalises immediately, at the cost of the last syllable
+of a sentence that fades out. Accepted range is `0..2000` ms.
 
 While recording, every available PipeWire `Audio/Source` is opened as a shared
 capture stream. Each stream is scored independently using speech-to-noise
