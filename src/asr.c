@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "asr.h"
 
+#include <dirent.h>
 #include <sherpa-onnx/c-api/c-api.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,52 +15,150 @@ struct vi_asr {
     vi_transcript_callback callback;
     void *userdata;
     char previous[4096];
+    char model_name[128];
+    char decoder[32];
+    const char *kind;
+    int threads;
 };
 
-static int model_path(char *buffer, size_t size, const char *directory,
-                      const char *filename) {
-    int written = snprintf(buffer, size, "%s/%s", directory, filename);
-    return written >= 0 && (size_t)written < size ? 0 : -1;
+/* A model directory is whatever upstream shipped: file names carry epoch and
+   averaging counts that differ per release, and the same architecture appears
+   with and without quantised weights. Rather than hard-coding one release's
+   names, each role is filled by the best matching file present. */
+struct pick {
+    char path[4096];
+    int score;
+};
+
+static bool ends_with(const char *name, const char *suffix) {
+    const size_t name_length = strlen(name);
+    const size_t suffix_length = strlen(suffix);
+    return name_length >= suffix_length &&
+           strcmp(name + name_length - suffix_length, suffix) == 0;
 }
 
-struct vi_asr *vi_asr_create(const char *model_directory, int threads,
-                             vi_transcript_callback callback, void *userdata) {
-    if (model_directory == NULL || model_directory[0] == '\0') return NULL;
-    struct vi_asr *asr = calloc(1, sizeof(*asr));
-    if (asr == NULL) return NULL;
+static void consider(struct pick *best, const char *directory, const char *name,
+                     const char *prefix, bool prefer_int8) {
+    if (!ends_with(name, ".onnx")) return;
+    if (strncmp(name, prefix, strlen(prefix)) != 0) return;
+    const bool int8 = strstr(name, ".int8.") != NULL;
+    const int score = (int8 == prefer_int8) ? 2 : 1;
+    if (score < best->score) return;
+    char path[sizeof(best->path)];
+    int written = snprintf(path, sizeof(path), "%s/%s", directory, name);
+    if (written < 0 || (size_t)written >= sizeof(path)) return;
+    /* Same preference: keep the lexicographically first so a directory holding
+       several checkpoints always loads the same one. */
+    if (score == best->score && best->score > 0 && strcmp(path, best->path) >= 0) {
+        return;
+    }
+    memcpy(best->path, path, (size_t)written + 1U);
+    best->score = score;
+}
 
-    char encoder[4096];
-    char decoder[4096];
-    char joiner[4096];
+static int scan_directory(const char *directory, bool prefer_int8,
+                          struct pick *encoder, struct pick *decoder,
+                          struct pick *joiner, struct pick *single) {
+    DIR *handle = opendir(directory);
+    if (handle == NULL) return -1;
+    const struct dirent *entry = NULL;
+    while ((entry = readdir(handle)) != NULL) {
+        consider(encoder, directory, entry->d_name, "encoder", prefer_int8);
+        consider(decoder, directory, entry->d_name, "decoder", prefer_int8);
+        consider(joiner, directory, entry->d_name, "joiner", prefer_int8);
+        consider(single, directory, entry->d_name, "model", prefer_int8);
+        consider(single, directory, entry->d_name, "ctc", prefer_int8);
+    }
+    closedir(handle);
+    return 0;
+}
+
+static void remember_name(char *buffer, size_t size, const char *directory) {
+    const char *name = strrchr(directory, '/');
+    name = name != NULL ? name + 1 : directory;
+    if (name[0] == '\0') name = directory;
+    size_t length = strlen(name);
+    if (length >= size) length = size - 1;
+    memcpy(buffer, name, length);
+    buffer[length] = '\0';
+}
+
+void vi_asr_config_defaults(struct vi_asr_config *config) {
+    if (config == NULL) return;
+    memset(config, 0, sizeof(*config));
+    config->decoding_method = "greedy_search";
+    config->threads = 2;
+    config->max_active_paths = 4;
+    config->hotwords_score = 1.5F;
+    config->rule1_min_trailing_silence = 2.4F;
+    config->rule2_min_trailing_silence = 1.2F;
+    config->rule3_min_utterance_length = 20.0F;
+    config->prefer_int8 = true;
+}
+
+struct vi_asr *vi_asr_create(const struct vi_asr_config *config,
+                             vi_transcript_callback callback, void *userdata) {
+    if (config == NULL || config->model_directory == NULL ||
+        config->model_directory[0] == '\0') {
+        return NULL;
+    }
     char tokens[4096];
-    if (model_path(encoder, sizeof(encoder), model_directory,
-                   "encoder-epoch-99-avg-1.int8.onnx") < 0 ||
-        model_path(decoder, sizeof(decoder), model_directory,
-                   "decoder-epoch-99-avg-1.onnx") < 0 ||
-        model_path(joiner, sizeof(joiner), model_directory,
-                   "joiner-epoch-99-avg-1.int8.onnx") < 0 ||
-        model_path(tokens, sizeof(tokens), model_directory, "tokens.txt") < 0) {
-        free(asr);
+    int written = snprintf(tokens, sizeof(tokens), "%s/tokens.txt",
+                           config->model_directory);
+    if (written < 0 || (size_t)written >= sizeof(tokens)) return NULL;
+
+    struct pick encoder = {0};
+    struct pick decoder = {0};
+    struct pick joiner = {0};
+    struct pick single = {0};
+    if (scan_directory(config->model_directory, config->prefer_int8, &encoder,
+                       &decoder, &joiner, &single) < 0) {
+        fprintf(stderr, "voice-inputd: cannot read model directory %s\n",
+                config->model_directory);
         return NULL;
     }
 
-    SherpaOnnxOnlineRecognizerConfig config;
-    memset(&config, 0, sizeof(config));
-    config.feat_config.sample_rate = 16000;
-    config.feat_config.feature_dim = 80;
-    config.model_config.transducer.encoder = encoder;
-    config.model_config.transducer.decoder = decoder;
-    config.model_config.transducer.joiner = joiner;
-    config.model_config.tokens = tokens;
-    config.model_config.provider = "cpu";
-    config.model_config.num_threads = threads > 0 ? threads : 2;
-    config.decoding_method = "greedy_search";
-    config.enable_endpoint = 1;
-    config.rule1_min_trailing_silence = 2.4F;
-    config.rule2_min_trailing_silence = 1.2F;
-    config.rule3_min_utterance_length = 20.0F;
+    struct vi_asr *asr = calloc(1, sizeof(*asr));
+    if (asr == NULL) return NULL;
 
-    asr->recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
+    SherpaOnnxOnlineRecognizerConfig recognizer;
+    memset(&recognizer, 0, sizeof(recognizer));
+    recognizer.feat_config.sample_rate = 16000;
+    recognizer.feat_config.feature_dim = 80;
+    if (encoder.score > 0 && decoder.score > 0 && joiner.score > 0) {
+        recognizer.model_config.transducer.encoder = encoder.path;
+        recognizer.model_config.transducer.decoder = decoder.path;
+        recognizer.model_config.transducer.joiner = joiner.path;
+        asr->kind = "transducer";
+    } else if (encoder.score > 0 && decoder.score > 0) {
+        recognizer.model_config.paraformer.encoder = encoder.path;
+        recognizer.model_config.paraformer.decoder = decoder.path;
+        asr->kind = "paraformer";
+    } else if (single.score > 0) {
+        recognizer.model_config.zipformer2_ctc.model = single.path;
+        asr->kind = "zipformer2-ctc";
+    } else {
+        fprintf(stderr, "voice-inputd: no usable model files in %s\n",
+                config->model_directory);
+        free(asr);
+        return NULL;
+    }
+    recognizer.model_config.tokens = tokens;
+    recognizer.model_config.provider = "cpu";
+    recognizer.model_config.num_threads = config->threads > 0 ? config->threads : 2;
+    recognizer.decoding_method = config->decoding_method != NULL
+                                     ? config->decoding_method
+                                     : "greedy_search";
+    recognizer.max_active_paths = config->max_active_paths;
+    recognizer.blank_penalty = config->blank_penalty;
+    recognizer.hotwords_file = config->hotwords_file;
+    recognizer.hotwords_score = config->hotwords_score;
+    recognizer.enable_endpoint = 1;
+    recognizer.rule1_min_trailing_silence = config->rule1_min_trailing_silence;
+    recognizer.rule2_min_trailing_silence = config->rule2_min_trailing_silence;
+    recognizer.rule3_min_utterance_length = config->rule3_min_utterance_length;
+
+    asr->recognizer = SherpaOnnxCreateOnlineRecognizer(&recognizer);
     if (asr->recognizer == NULL) {
         free(asr);
         return NULL;
@@ -71,6 +171,10 @@ struct vi_asr *vi_asr_create(const char *model_directory, int threads,
     }
     asr->callback = callback;
     asr->userdata = userdata;
+    asr->threads = recognizer.model_config.num_threads;
+    remember_name(asr->model_name, sizeof(asr->model_name),
+                  config->model_directory);
+    snprintf(asr->decoder, sizeof(asr->decoder), "%s", recognizer.decoding_method);
     return asr;
 }
 
@@ -134,4 +238,20 @@ void vi_asr_finish(struct vi_asr *asr) {
 
 const char *vi_asr_state(const struct vi_asr *asr) {
     return asr != NULL ? "ready" : "disabled";
+}
+
+const char *vi_asr_model_name(const struct vi_asr *asr) {
+    return asr != NULL ? asr->model_name : "";
+}
+
+const char *vi_asr_model_kind(const struct vi_asr *asr) {
+    return asr != NULL && asr->kind != NULL ? asr->kind : "";
+}
+
+const char *vi_asr_decoder(const struct vi_asr *asr) {
+    return asr != NULL ? asr->decoder : "";
+}
+
+int vi_asr_threads(const struct vi_asr *asr) {
+    return asr != NULL ? asr->threads : 0;
 }

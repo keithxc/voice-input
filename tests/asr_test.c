@@ -30,7 +30,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cannot read %s\n", wav_path);
         return EXIT_FAILURE;
     }
-    struct vi_asr *asr = vi_asr_create(argv[1], 2, on_transcript, NULL);
+    struct vi_asr_config config;
+    vi_asr_config_defaults(&config);
+    config.model_directory = argv[1];
+    struct vi_asr *asr = vi_asr_create(&config, on_transcript, NULL);
     if (asr == NULL) {
         SherpaOnnxFreeWave(wave);
         return EXIT_FAILURE;

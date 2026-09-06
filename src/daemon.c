@@ -377,8 +377,36 @@ static void maybe_broadcast_source(struct app *app) {
 }
 
 static void usage(FILE *stream) {
-    fprintf(stream, "Usage: voice-inputd [--socket PATH] [--model DIR] "
-                    "[--threads N] [--no-audio] [--version]\n");
+    fprintf(stream,
+            "Usage: voice-inputd [--socket PATH] [--model DIR] [--threads N]\n"
+            "                    [--decoder greedy_search|modified_beam_search]\n"
+            "                    [--no-audio] [--version]\n");
+}
+
+/* Configuration comes from the environment so a model can be swapped between
+   two runs of the same build; the command line overrides it for one run. */
+static const char *environment_text(const char *name, const char *fallback) {
+    const char *value = getenv(name);
+    return value != NULL && value[0] != '\0' ? value : fallback;
+}
+
+static long environment_long(const char *name, long fallback, long low,
+                             long high) {
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0') return fallback;
+    char *end = NULL;
+    const long parsed = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < low || parsed > high) {
+        fprintf(stderr, "voice-inputd: ignoring %s=%s\n", name, value);
+        return fallback;
+    }
+    return parsed;
+}
+
+static float environment_seconds(const char *name, float fallback) {
+    const long milliseconds =
+        environment_long(name, (long)(fallback * 1000.0F), 0L, 60000L);
+    return (float)milliseconds / 1000.0F;
 }
 
 int main(int argc, char **argv) {
@@ -395,8 +423,29 @@ int main(int argc, char **argv) {
         const long parsed = strtol(tail_setting, &end, 10);
         if (*end == '\0' && parsed >= 0L && parsed <= 2000L) tail_ms = parsed;
     }
-    const char *model_directory = getenv("VOICE_INPUT_MODEL_DIR");
-    int asr_threads = 2;
+    struct vi_asr_config asr_config;
+    vi_asr_config_defaults(&asr_config);
+    /* VOICE_INPUT_MODEL_DIR is what the Nix wrapper sets; VOICE_INPUT_ASR_MODEL
+       is the name the other settings share and wins when both are present. */
+    const char *model_directory =
+        environment_text("VOICE_INPUT_ASR_MODEL",
+                         getenv("VOICE_INPUT_MODEL_DIR"));
+    asr_config.decoding_method =
+        environment_text("VOICE_INPUT_ASR_DECODER", asr_config.decoding_method);
+    asr_config.threads =
+        (int)environment_long("VOICE_INPUT_ASR_THREADS", asr_config.threads, 1, 32);
+    asr_config.max_active_paths =
+        (int)environment_long("VOICE_INPUT_ASR_MAX_ACTIVE_PATHS",
+                              asr_config.max_active_paths, 1, 64);
+    asr_config.hotwords_file = getenv("VOICE_INPUT_ASR_HOTWORDS");
+    asr_config.prefer_int8 = environment_long("VOICE_INPUT_ASR_INT8", 1, 0, 1) != 0;
+    asr_config.rule1_min_trailing_silence =
+        environment_seconds("VOICE_INPUT_ENDPOINT_RULE1_MS",
+                            asr_config.rule1_min_trailing_silence);
+    asr_config.rule2_min_trailing_silence =
+        environment_seconds("VOICE_INPUT_ENDPOINT_RULE2_MS",
+                            asr_config.rule2_min_trailing_silence);
+    int asr_threads = asr_config.threads;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             if (strlen(argv[++i]) >= sizeof(socket_path)) return EXIT_FAILURE;
@@ -408,6 +457,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             asr_threads = atoi(argv[++i]);
             if (asr_threads < 1 || asr_threads > 32) return EXIT_FAILURE;
+        } else if (strcmp(argv[i], "--decoder") == 0 && i + 1 < argc) {
+            asr_config.decoding_method = argv[++i];
         } else if (strcmp(argv[i], "--version") == 0) {
             puts("voice-inputd " VOICE_INPUT_VERSION);
             return EXIT_SUCCESS;
@@ -416,6 +467,9 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
     }
+
+    asr_config.model_directory = model_directory;
+    asr_config.threads = asr_threads;
 
     struct app app = { .server_fd = -1, .audio = NULL, .asr = NULL,
                        .no_audio = no_audio,
@@ -429,16 +483,17 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
         if (model_directory != NULL && model_directory[0] != '\0') {
-            app.asr = vi_asr_create(model_directory, asr_threads,
-                                    on_transcript, &app);
+            app.asr = vi_asr_create(&asr_config, on_transcript, &app);
             if (app.asr == NULL) {
                 fprintf(stderr, "voice-inputd: failed to load ASR model from %s\n",
                         model_directory);
                 vi_audio_destroy(app.audio);
                 return EXIT_FAILURE;
             }
-            fprintf(stderr, "voice-inputd: ASR model loaded from %s\n",
-                    model_directory);
+            fprintf(stderr,
+                    "voice-inputd: ASR model loaded from %s (%s, %s, %d threads)\n",
+                    model_directory, vi_asr_model_kind(app.asr),
+                    vi_asr_decoder(app.asr), vi_asr_threads(app.asr));
         }
     }
     app.server_fd = create_server(socket_path);
