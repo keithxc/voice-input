@@ -22,6 +22,7 @@ enum vi_command vi_parse_command(const char *line) {
     if (strcmp(word, "start") == 0) return VI_COMMAND_START;
     if (strcmp(word, "stop") == 0) return VI_COMMAND_STOP;
     if (strcmp(word, "toggle") == 0) return VI_COMMAND_TOGGLE;
+    if (strcmp(word, "sources") == 0) return VI_COMMAND_SOURCES;
     if (strcmp(word, "quit") == 0) return VI_COMMAND_QUIT;
     return VI_COMMAND_INVALID;
 }
@@ -32,6 +33,7 @@ const char *vi_command_name(enum vi_command command) {
     case VI_COMMAND_START: return "start";
     case VI_COMMAND_STOP: return "stop";
     case VI_COMMAND_TOGGLE: return "toggle";
+    case VI_COMMAND_SOURCES: return "sources";
     case VI_COMMAND_QUIT: return "quit";
     default: return "invalid";
     }
@@ -65,11 +67,9 @@ int vi_json_state(char *buffer, size_t size, const char *event, bool recording,
                     event, recording ? "true" : "false", audio_state, asr_state);
 }
 
-int vi_json_text(char *buffer, size_t size, const char *event, const char *value) {
-    if (buffer == NULL || size == 0 || event == NULL || value == NULL) return -1;
-    int prefix = snprintf(buffer, size, "{\"event\":\"%s\",\"text\":\"", event);
-    if (prefix < 0 || (size_t)prefix >= size) return -1;
-    size_t used = (size_t)prefix;
+int vi_json_escape(char *buffer, size_t size, const char *value) {
+    if (buffer == NULL || size == 0 || value == NULL) return -1;
+    size_t used = 0U;
     for (const unsigned char *p = (const unsigned char *)value; *p != '\0'; ++p) {
         const char *escape = NULL;
         if (*p == '"') escape = "\\\"";
@@ -79,14 +79,26 @@ int vi_json_text(char *buffer, size_t size, const char *event, const char *value
         else if (*p == '\t') escape = "\\t";
         if (escape != NULL) {
             const size_t length = strlen(escape);
-            if (used + length + 3U >= size) return -1;
+            if (used + length + 1U > size) return -1;
             memcpy(buffer + used, escape, length);
             used += length;
         } else if (*p >= 0x20U) {
-            if (used + 4U >= size) return -1;
+            if (used + 2U > size) return -1;
             buffer[used++] = (char)*p;
         }
     }
-    memcpy(buffer + used, "\"}\n", 4);
-    return (int)(used + 3U);
+    buffer[used] = '\0';
+    return (int)used;
+}
+
+int vi_json_text(char *buffer, size_t size, const char *event, const char *value) {
+    if (buffer == NULL || size == 0 || event == NULL || value == NULL) return -1;
+    int prefix = snprintf(buffer, size, "{\"event\":\"%s\",\"text\":\"", event);
+    if (prefix < 0 || (size_t)prefix >= size) return -1;
+    const size_t used = (size_t)prefix;
+    if (size < used + 4U) return -1;
+    const int escaped = vi_json_escape(buffer + used, size - used - 3U, value);
+    if (escaped < 0) return -1;
+    memcpy(buffer + used + (size_t)escaped, "\"}\n", 4);
+    return (int)(used + (size_t)escaped + 3U);
 }

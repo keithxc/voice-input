@@ -21,5 +21,7 @@ const char *vi_audio_state(const struct vi_audio *audio);
 bool vi_audio_is_active(const struct vi_audio *audio);
 const char *vi_audio_selected_source(const struct vi_audio *audio);
 size_t vi_audio_source_count(const struct vi_audio *audio);
+int vi_audio_describe_sources(const struct vi_audio *audio, char *buffer,
+                              size_t size);
 
 #endif

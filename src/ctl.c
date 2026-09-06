@@ -12,7 +12,7 @@
 
 static void usage(FILE *stream) {
     fputs("Usage: voice-inputctl [--socket PATH] COMMAND\n"
-          "Commands: status, start, stop, toggle, monitor, quit\n", stream);
+          "Commands: status, start, stop, toggle, sources, monitor, quit\n", stream);
 }
 
 static int connect_socket(const char *path) {
@@ -81,11 +81,16 @@ int main(int argc, char **argv) {
         close(fd);
         return EXIT_FAILURE;
     }
-    char line[512];
+    /* The sources reply carries every discovered node, so keep the buffer large
+       enough that one event stays one fgets() line; a split line would also
+       miscount the replies we still have to wait for. */
+    static char line[16384];
     int lines_needed = monitor ? -1 : 2;
     while (fgets(line, sizeof(line), input) != NULL) {
         fputs(line, stdout);
         fflush(stdout);
+        const size_t length = strlen(line);
+        if (length > 0U && line[length - 1U] != '\n') continue;
         if (lines_needed > 0 && --lines_needed == 0) break;
     }
     fclose(input);

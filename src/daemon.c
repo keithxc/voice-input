@@ -143,6 +143,17 @@ static void handle_command(struct app *app, size_t index, const char *line) {
     case VI_COMMAND_TOGGLE:
         (void)set_recording(app, !app->recording);
         break;
+    case VI_COMMAND_SOURCES: {
+        static char message[16384];
+        if (vi_audio_describe_sources(app->no_audio ? NULL : app->audio,
+                                      message, sizeof(message)) > 0) {
+            send_to_client(app, index, message);
+        } else {
+            send_to_client(app, index,
+                           "{\"event\":\"error\",\"message\":\"sources-failed\"}\n");
+        }
+        break;
+    }
     case VI_COMMAND_QUIT:
         send_to_client(app, index, "{\"event\":\"stopping\"}\n");
         app->running = false;

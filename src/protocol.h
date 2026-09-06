@@ -10,6 +10,7 @@ enum vi_command {
     VI_COMMAND_START,
     VI_COMMAND_STOP,
     VI_COMMAND_TOGGLE,
+    VI_COMMAND_SOURCES,
     VI_COMMAND_QUIT,
 };
 
@@ -19,5 +20,6 @@ int vi_runtime_socket_path(char *buffer, size_t size);
 int vi_json_state(char *buffer, size_t size, const char *event, bool recording,
                   const char *audio_state, const char *asr_state);
 int vi_json_text(char *buffer, size_t size, const char *event, const char *value);
+int vi_json_escape(char *buffer, size_t size, const char *value);
 
 #endif

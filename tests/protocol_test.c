@@ -14,6 +14,13 @@ int main(void) {
     assert(strstr(json, "\"recording\":true") != NULL);
     assert(vi_json_text(json, sizeof(json), "final", "say \"NixOS\"") > 0);
     assert(strstr(json, "say \\\"NixOS\\\"") != NULL);
+
+    assert(vi_parse_command("sources\n") == VI_COMMAND_SOURCES);
+    assert(strcmp(vi_command_name(VI_COMMAND_SOURCES), "sources") == 0);
+    char escaped[64];
+    assert(vi_json_escape(escaped, sizeof(escaped), "a\"b\\c\nd") == 10);
+    assert(strcmp(escaped, "a\\\"b\\\\c\\nd") == 0);
+    assert(vi_json_escape(escaped, 4, "abcdefgh") < 0);
     puts("protocol tests passed");
     return 0;
 }

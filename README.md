@@ -23,6 +23,8 @@ The first usable milestone includes:
 - partial/final transcript events and endpoint detection;
 - a non-focusable Qt6/QML Wayland layer-shell overlay showing recording,
   recognition, partial text, audio level, commit success, and output errors;
+- a `sources` command reporting every discovered capture node with its state,
+  level, noise floor, and score;
 - a native Fcitx5 addon that commits final text to the focused application;
 - systemd user services, a Nix package, and automated protocol, integration,
   adaptive-gain, UI-model, QML rendering, normal-ASR, and quiet-ASR tests.
@@ -44,7 +46,9 @@ While recording, every available PipeWire `Audio/Source` is opened as a shared
 capture stream. Each stream is scored independently using speech-to-noise
 ratio, useful signal level, and clipping. The daemon sends only the clearest
 source to ASR and uses a margin, consecutive votes, and a cooldown before
-switching. Once speech begins, the chosen source is held through short pauses
+switching. Selection is bootstrapped on the first source that delivers buffers,
+however quiet, so a low-output built-in microphone still reaches the recogniser;
+the quality thresholds then apply only to switching away from it. Once speech begins, the chosen source is held through short pauses
 so an utterance cannot be split by quality fluctuations. Newly connected USB
 or Bluetooth microphones are discovered without configuration; unavailable
 sources are skipped. Unrelated devices are not
@@ -89,6 +93,19 @@ Control it from another terminal:
 ./result/bin/voice-inputctl monitor
 ./result/bin/voice-inputctl stop
 ```
+
+If nothing is recognised, inspect the capture nodes while recording:
+
+```sh
+./result/bin/voice-inputctl start
+./result/bin/voice-inputctl sources
+```
+
+Each entry reports the PipeWire node name, stream state, delivered buffer
+count, RMS, noise floor, and score. An empty list means PipeWire exposes no
+capture node to the daemon; entries stuck at `connecting` or with `chunks` at
+zero mean the node is present but delivering nothing, which is usually a muted
+or unrouted device rather than a recognition problem.
 
 The default socket is
 `$XDG_RUNTIME_DIR/voice-input/voice-input.sock`. Events are newline-delimited

@@ -75,7 +75,8 @@ if(BUILD_TESTING)
             "$<TARGET_FILE:voice-inputd>" "$<TARGET_FILE:voice-inputctl>")
   add_executable(audio-gain-test tests/audio_gain_test.c src/audio.c)
   target_include_directories(audio-gain-test PRIVATE src)
-  target_link_libraries(audio-gain-test PRIVATE PkgConfig::PIPEWIRE m)
+  target_link_libraries(audio-gain-test PRIVATE voice-input-common
+    PkgConfig::PIPEWIRE m)
   add_test(NAME audio-gain COMMAND audio-gain-test)
   qt_add_executable(overlay-model-test
     tests/overlay_model_test.cpp
@@ -118,7 +119,7 @@ if(BUILD_TESTING)
   if(VOICE_INPUT_TEST_MODEL_DIR)
     add_executable(asr-test tests/asr_test.c src/asr.c src/audio.c)
     target_include_directories(asr-test PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")
-    target_link_libraries(asr-test PRIVATE
+    target_link_libraries(asr-test PRIVATE voice-input-common
       "${SHERPA_ONNX_C_API}" PkgConfig::PIPEWIRE m)
     add_test(NAME asr-model COMMAND asr-test "${VOICE_INPUT_TEST_MODEL_DIR}")
     add_test(NAME asr-quiet-model

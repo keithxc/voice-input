@@ -2,6 +2,8 @@
 
 #include "audio.h"
 
+#include "protocol.h"
+
 #include <math.h>
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
@@ -20,6 +22,7 @@
 #define VI_SWITCH_VOTES 8U
 #define VI_SWITCH_COOLDOWN_MS 1000L
 #define VI_SPEECH_SOURCE_HOLD_MS 1200L
+#define VI_SWITCH_MIN_RMS 0.001F
 
 struct vi_audio;
 
@@ -124,24 +127,38 @@ static void select_source(struct vi_audio *audio, struct vi_source *source) {
             source != NULL ? source->description : "none");
 }
 
-static void consider_source_switch(struct vi_audio *audio,
-                                   struct vi_source *updated) {
+static struct vi_source *best_source(struct vi_audio *audio, bool require_signal) {
     struct vi_source *best = NULL;
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) {
         struct vi_source *source = &audio->sources[i];
         if (source->id == SPA_ID_INVALID || source->stream == NULL ||
-            source->state != PW_STREAM_STATE_STREAMING || source->chunks < 4U ||
-            source->rms < 0.001F) {
+            source->state != PW_STREAM_STATE_STREAMING || source->chunks == 0U) {
+            continue;
+        }
+        if (require_signal &&
+            (source->chunks < 4U || source->rms < VI_SWITCH_MIN_RMS)) {
             continue;
         }
         if (best == NULL || source->score > best->score) best = source;
     }
+    return best;
+}
+
+static void consider_source_switch(struct vi_audio *audio,
+                                   struct vi_source *updated) {
     if (audio->selected == NULL || audio->selected->stream == NULL ||
         audio->selected->state == PW_STREAM_STATE_ERROR ||
         audio->selected->state == PW_STREAM_STATE_UNCONNECTED) {
-        if (best != NULL) select_source(audio, best);
+        /* Bootstrap on any source that is delivering buffers, however quiet.
+           Requiring a signal here would deadlock on low-output built-in
+           microphones (AMD ACP/SOF digital mics idle well below the switching
+           threshold): nothing would ever be selected, so the ring buffer would
+           stay empty and the recogniser would never see a single sample. */
+        struct vi_source *bootstrap = best_source(audio, false);
+        if (bootstrap != NULL) select_source(audio, bootstrap);
         return;
     }
+    struct vi_source *best = best_source(audio, true);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (elapsed_ms(&now, &audio->last_selected_speech) <
@@ -312,9 +329,13 @@ static void stop_source(struct vi_source *source) {
 }
 
 static bool is_audio_source(const char *media_class) {
+    /* Audio/Duplex covers combined capture/playback nodes, which is how several
+       laptop codecs (including AMD ACP digital microphone arrays) expose their
+       only usable input. */
     return media_class != NULL &&
            (strcmp(media_class, "Audio/Source") == 0 ||
-            strncmp(media_class, "Audio/Source/", 13U) == 0);
+            strncmp(media_class, "Audio/Source/", 13U) == 0 ||
+            strcmp(media_class, "Audio/Duplex") == 0);
 }
 
 static void on_registry_global(void *data, uint32_t id, uint32_t permissions,
@@ -432,7 +453,14 @@ int vi_audio_start(struct vi_audio *audio) {
         if (audio->sources[i].id != SPA_ID_INVALID &&
             start_source(&audio->sources[i]) == 0) ++started;
     }
-    fprintf(stderr, "voice-inputd: parallel capture started on %d source(s)\n", started);
+    if (started == 0) {
+        fprintf(stderr, "voice-inputd: no capture source available; check that "
+                        "PipeWire exposes an Audio/Source node and that it is "
+                        "not muted (voice-inputctl sources)\n");
+    } else {
+        fprintf(stderr, "voice-inputd: parallel capture started on %d source(s)\n",
+                started);
+    }
     return 0;
 }
 
@@ -492,4 +520,62 @@ size_t vi_audio_source_count(const struct vi_audio *audio) {
         if (audio->sources[i].id != SPA_ID_INVALID) ++count;
     }
     return count;
+}
+
+static const char *stream_state_name(enum pw_stream_state state) {
+    switch (state) {
+    case PW_STREAM_STATE_ERROR: return "error";
+    case PW_STREAM_STATE_UNCONNECTED: return "unconnected";
+    case PW_STREAM_STATE_CONNECTING: return "connecting";
+    case PW_STREAM_STATE_PAUSED: return "paused";
+    case PW_STREAM_STATE_STREAMING: return "streaming";
+    default: return "unknown";
+    }
+}
+
+int vi_audio_describe_sources(const struct vi_audio *audio, char *buffer,
+                              size_t size) {
+    if (buffer == NULL || size == 0U) return -1;
+    char selected[512];
+    if (vi_json_escape(selected, sizeof(selected),
+                       vi_audio_selected_source(audio)) < 0) {
+        return -1;
+    }
+    int written = snprintf(buffer, size,
+                           "{\"event\":\"sources\",\"active\":%s,"
+                           "\"selected\":\"%s\",\"items\":[",
+                           vi_audio_is_active(audio) ? "true" : "false", selected);
+    if (written < 0 || (size_t)written >= size) return -1;
+    size_t used = (size_t)written;
+
+    bool first = true;
+    for (size_t i = 0; audio != NULL && i < VI_MAX_SOURCES; ++i) {
+        const struct vi_source *source = &audio->sources[i];
+        if (source->id == SPA_ID_INVALID) continue;
+        char name[512];
+        char description[512];
+        if (vi_json_escape(name, sizeof(name), source->name) < 0 ||
+            vi_json_escape(description, sizeof(description),
+                           source->description) < 0) {
+            return -1;
+        }
+        written = snprintf(buffer + used, size - used,
+                           "%s{\"id\":%u,\"name\":\"%s\",\"description\":\"%s\","
+                           "\"state\":\"%s\",\"chunks\":%u,\"rms\":%.6f,"
+                           "\"noise\":%.6f,\"score\":%.2f,\"selected\":%s}",
+                           first ? "" : ",", source->id, name, description,
+                           source->stream != NULL
+                               ? stream_state_name(source->state)
+                               : "idle",
+                           source->chunks, (double)source->rms,
+                           (double)source->noise_floor, (double)source->score,
+                           audio->selected == source ? "true" : "false");
+        if (written < 0 || (size_t)written >= size - used) return -1;
+        used += (size_t)written;
+        first = false;
+    }
+
+    if (used + 3U >= size) return -1;
+    memcpy(buffer + used, "]}\n", 4);
+    return (int)(used + 3U);
 }
