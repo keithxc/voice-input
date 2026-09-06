@@ -19,6 +19,7 @@
 #define VI_SWITCH_MARGIN 6.0F
 #define VI_SWITCH_VOTES 8U
 #define VI_SWITCH_COOLDOWN_MS 1000L
+#define VI_SPEECH_SOURCE_HOLD_MS 1200L
 
 struct vi_audio;
 
@@ -50,6 +51,7 @@ struct vi_audio {
     struct vi_source *candidate;
     unsigned candidate_votes;
     struct timespec last_switch;
+    struct timespec last_selected_speech;
     float samples[VI_RING_SAMPLES];
     atomic_size_t read_index;
     atomic_size_t write_index;
@@ -114,6 +116,7 @@ static void select_source(struct vi_audio *audio, struct vi_source *source) {
     audio->candidate = NULL;
     audio->candidate_votes = 0U;
     clock_gettime(CLOCK_MONOTONIC, &audio->last_switch);
+    audio->last_selected_speech = audio->last_switch;
     const size_t write_index = atomic_load_explicit(&audio->write_index,
                                                     memory_order_acquire);
     atomic_store_explicit(&audio->read_index, write_index, memory_order_release);
@@ -139,14 +142,20 @@ static void consider_source_switch(struct vi_audio *audio,
         if (best != NULL) select_source(audio, best);
         return;
     }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (elapsed_ms(&now, &audio->last_selected_speech) <
+        VI_SPEECH_SOURCE_HOLD_MS) {
+        audio->candidate = NULL;
+        audio->candidate_votes = 0U;
+        return;
+    }
     if (best == NULL || best == audio->selected ||
         best->score < audio->selected->score + VI_SWITCH_MARGIN) {
         audio->candidate = NULL;
         audio->candidate_votes = 0U;
         return;
     }
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
     if (elapsed_ms(&now, &audio->last_switch) < VI_SWITCH_COOLDOWN_MS) return;
     if (updated != best) return;
     if (audio->candidate != best) {
@@ -229,6 +238,11 @@ static void on_stream_process(void *data) {
                 source->rms, source->noise_floor,
                 (float)clipped / (float)count);
             ++source->chunks;
+            if (source->audio->selected == source && source->rms >= 0.003F &&
+                source->rms >= 2.0F * source->noise_floor) {
+                clock_gettime(CLOCK_MONOTONIC,
+                              &source->audio->last_selected_speech);
+            }
             consider_source_switch(source->audio, source);
             if (source->audio->selected == source) {
                 queue_selected_samples(source, samples, count, stride);

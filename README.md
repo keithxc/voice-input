@@ -44,8 +44,10 @@ While recording, every available PipeWire `Audio/Source` is opened as a shared
 capture stream. Each stream is scored independently using speech-to-noise
 ratio, useful signal level, and clipping. The daemon sends only the clearest
 source to ASR and uses a margin, consecutive votes, and a cooldown before
-switching. Newly connected USB or Bluetooth microphones are discovered without
-configuration; unavailable sources are skipped. Unrelated devices are not
+switching. Once speech begins, the chosen source is held through short pauses
+so an utterance cannot be split by quality fluctuations. Newly connected USB
+or Bluetooth microphones are discovered without configuration; unavailable
+sources are skipped. Unrelated devices are not
 mixed because their clocks, latency, and noise are not synchronized.
 The overlay shows the source currently feeding ASR.
 
