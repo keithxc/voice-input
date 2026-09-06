@@ -6,6 +6,15 @@
 #include <QtGlobal>
 
 OverlayModel::OverlayModel(QObject *parent) : QObject(parent) {
+    const QString desktop = qEnvironmentVariable("XDG_CURRENT_DESKTOP").toUpper();
+    if (desktop.contains(QStringLiteral("GNOME"))) {
+        desktopStyle_ = QStringLiteral("gnome");
+    } else if (desktop.contains(QStringLiteral("KDE")) ||
+               desktop.contains(QStringLiteral("PLASMA"))) {
+        desktopStyle_ = QStringLiteral("kde");
+    } else {
+        desktopStyle_ = QStringLiteral("generic");
+    }
     reconnectTimer_.setInterval(1000);
     reconnectTimer_.setSingleShot(true);
     hideTimer_.setSingleShot(true);

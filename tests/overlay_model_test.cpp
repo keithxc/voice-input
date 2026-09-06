@@ -6,6 +6,18 @@ class OverlayModelTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void detectsDesktopStyle() {
+        const QByteArray previous = qgetenv("XDG_CURRENT_DESKTOP");
+        qputenv("XDG_CURRENT_DESKTOP", "KDE");
+        OverlayModel kde;
+        QCOMPARE(kde.desktopStyle(), QStringLiteral("kde"));
+        qputenv("XDG_CURRENT_DESKTOP", "GNOME");
+        OverlayModel gnome;
+        QCOMPARE(gnome.desktopStyle(), QStringLiteral("gnome"));
+        if (previous.isNull()) qunsetenv("XDG_CURRENT_DESKTOP");
+        else qputenv("XDG_CURRENT_DESKTOP", previous);
+    }
+
     void ignoresIdleHello() {
         OverlayModel model;
         model.processLine(R"({"event":"hello","recording":false})");

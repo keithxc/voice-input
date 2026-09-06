@@ -52,6 +52,7 @@ int main(int argc, char **argv) {
 
     if (parser.isSet(QStringLiteral("demo"))) {
         model.processLine(R"({"event":"state","recording":true})");
+        model.processLine(R"({"event":"source","text":"AB13X USB Microphone"})");
         model.processLine(R"({"event":"level","rms":0.18})");
         model.processLine(R"({"event":"partial","text":"NixOS 原生流式语音输入"})");
     } else {

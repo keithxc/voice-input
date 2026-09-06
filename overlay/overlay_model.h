@@ -14,6 +14,7 @@ class OverlayModel final : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QString text READ text NOTIFY changed)
     Q_PROPERTY(QString source READ source NOTIFY changed)
+    Q_PROPERTY(QString desktopStyle READ desktopStyle CONSTANT)
 
 public:
     explicit OverlayModel(QObject *parent = nullptr);
@@ -25,6 +26,7 @@ public:
     QString status() const { return status_; }
     QString text() const { return text_; }
     QString source() const { return source_; }
+    QString desktopStyle() const { return desktopStyle_; }
 
     void connectToDaemon();
     void processLine(const QByteArray &line);
@@ -49,6 +51,7 @@ private:
     QString status_ = QStringLiteral("待机");
     QString text_;
     QString source_;
+    QString desktopStyle_;
 };
 
 #endif

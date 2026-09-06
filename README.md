@@ -23,6 +23,8 @@ The first usable milestone includes:
 - partial/final transcript events and endpoint detection;
 - a non-focusable Qt6/QML Wayland layer-shell overlay showing recording,
   recognition, partial text, audio level, commit success, and output errors;
+- live system light/dark palette integration, with a compact squared KDE/Plasma
+  treatment and a softer rounded GNOME treatment selected automatically;
 - a `sources` command reporting every discovered capture node with its state,
   level, noise floor, and score;
 - a native Fcitx5 addon that commits final text to the focused application;
