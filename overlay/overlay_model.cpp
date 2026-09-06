@@ -103,6 +103,12 @@ void OverlayModel::processLine(const QByteArray &line) {
         return;
     }
 
+    if (event == QStringLiteral("source")) {
+        source_ = object.value(QStringLiteral("text")).toString();
+        emit changed();
+        return;
+    }
+
     if (event == QStringLiteral("partial")) {
         text_ = object.value(QStringLiteral("text")).toString();
         status_ = QStringLiteral("正在识别…");

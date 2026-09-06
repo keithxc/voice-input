@@ -56,6 +56,8 @@ Window {
                 Text {
                     width: parent.width
                     text: overlayModel.status
+                          + (overlayModel.source.length > 0
+                             ? " · " + overlayModel.source : "")
                     color: overlayModel.error ? "#ff8585" : "#aeb4bf"
                     font.pixelSize: 14
                     font.weight: Font.DemiBold

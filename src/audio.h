@@ -16,7 +16,10 @@ int vi_audio_iterate(struct vi_audio *audio, int timeout_ms);
 size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity);
 float vi_audio_apply_gain(float *samples, size_t count, float current_gain,
                           float max_gain, float target_rms);
+float vi_audio_quality_score(float rms, float noise_floor, float clipping_ratio);
 const char *vi_audio_state(const struct vi_audio *audio);
 bool vi_audio_is_active(const struct vi_audio *audio);
+const char *vi_audio_selected_source(const struct vi_audio *audio);
+size_t vi_audio_source_count(const struct vi_audio *audio);
 
 #endif

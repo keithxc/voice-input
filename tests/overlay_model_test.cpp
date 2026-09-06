@@ -22,6 +22,8 @@ private slots:
 
         model.processLine(R"({"event":"level","rms":0.125})");
         QCOMPARE(model.level(), 0.125);
+        model.processLine(R"({"event":"source","text":"USB Microphone"})");
+        QCOMPARE(model.source(), QStringLiteral("USB Microphone"));
         model.processLine(R"({"event":"partial","text":"你好 NixOS"})");
         QCOMPARE(model.text(), QStringLiteral("你好 NixOS"));
         QCOMPARE(model.status(), QStringLiteral("正在识别…"));

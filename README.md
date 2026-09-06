@@ -13,7 +13,8 @@ fallbacks.
 The first usable milestone includes:
 
 - a persistent C17 daemon with zero audio processing while idle;
-- native PipeWire capture at 16 kHz, mono, signed 16-bit PCM;
+- zero-configuration parallel PipeWire capture of up to 16 hot-plugged input
+  devices at 16 kHz mono, with automatic quality-based source selection;
 - bounded adaptive input gain for quiet speech, with peak limiting;
 - a local Unix socket command/event protocol;
 - start, stop, toggle, status, monitor, and clean shutdown commands;
@@ -38,6 +39,15 @@ VOICE_INPUT_MAX_GAIN=8 VOICE_INPUT_TARGET_RMS=0.10 voice-inputd
 
 Higher values hear softer speech but also amplify room noise. Accepted ranges
 are `1..16` for maximum gain and `0.01..0.30` for target RMS.
+
+While recording, every available PipeWire `Audio/Source` is opened as a shared
+capture stream. Each stream is scored independently using speech-to-noise
+ratio, useful signal level, and clipping. The daemon sends only the clearest
+source to ASR and uses a margin, consecutive votes, and a cooldown before
+switching. Newly connected USB or Bluetooth microphones are discovered without
+configuration; unavailable sources are skipped. Unrelated devices are not
+mixed because their clocks, latency, and noise are not synchronized.
+The overlay shows the source currently feeding ASR.
 
 ## Build
 
@@ -100,7 +110,7 @@ global shortcut / CLI
           v
      voice-inputd (C17)
           |
-          +---- PipeWire native capture
+          +---- parallel PipeWire capture + automatic source selection
           +---- sherpa-onnx streaming ASR
           +---- Fcitx5 text commit
 ```

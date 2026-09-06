@@ -30,6 +30,7 @@ struct app {
     bool running;
     float pending_level;
     struct timespec last_level_sent;
+    char selected_source[256];
 };
 
 static volatile sig_atomic_t stop_requested = 0;
@@ -237,6 +238,17 @@ static void maybe_broadcast_level(struct app *app) {
     app->last_level_sent = now;
 }
 
+static void maybe_broadcast_source(struct app *app) {
+    if (!app->recording || app->no_audio) return;
+    const char *source = vi_audio_selected_source(app->audio);
+    if (strcmp(source, app->selected_source) == 0) return;
+    snprintf(app->selected_source, sizeof(app->selected_source), "%s", source);
+    char message[768];
+    if (vi_json_text(message, sizeof(message), "source", source) >= 0) {
+        broadcast(app, message);
+    }
+}
+
 static void usage(FILE *stream) {
     fprintf(stream, "Usage: voice-inputd [--socket PATH] [--model DIR] "
                     "[--threads N] [--no-audio] [--version]\n");
@@ -314,6 +326,7 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
         process_audio(&app);
+        maybe_broadcast_source(&app);
         maybe_broadcast_level(&app);
     }
 

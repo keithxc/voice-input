@@ -22,5 +22,10 @@ int main(void) {
     for (size_t i = 0; i < 4U; ++i) {
         if (fabsf(loud[i]) > 0.981F) return EXIT_FAILURE;
     }
+
+    const float clean = vi_audio_quality_score(0.08F, 0.004F, 0.0F);
+    const float noisy = vi_audio_quality_score(0.08F, 0.04F, 0.0F);
+    const float clipped = vi_audio_quality_score(0.08F, 0.004F, 0.20F);
+    if (!(clean > noisy && clean > clipped)) return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }

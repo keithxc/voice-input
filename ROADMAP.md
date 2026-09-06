@@ -20,6 +20,8 @@ and optional AMD XDNA2 acceleration.
 - Show recording, partial transcript, level, commit success, and errors in a
   non-focusable Qt6/QML layer-shell overlay
 - Test the overlay event model and render the real QML in a headless smoke test
+- Discover and capture hot-plugged PipeWire input devices in parallel, score
+  signal-to-noise/clipping, and automatically select the clearest source
 
 Checkpoint: `nix build` passes protocol, daemon integration, adaptive-gain,
 UI-model, QML rendering, normal-ASR, and 4%-volume quiet-ASR decoding tests; a
@@ -37,8 +39,6 @@ into native Wayland and Electron applications.
 
 ## Later
 
-- Score multiple PipeWire input devices by clipping and speech-to-noise ratio,
-  then select the clearest source instead of blindly mixing unrelated devices
 - Model/config selection without a runtime downloader
 - Latency, CPU, wakeup, memory, and package-power benchmarks
 - Optional XDNA2 backend only if measurements beat the CPU experience
