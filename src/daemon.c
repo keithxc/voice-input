@@ -6,6 +6,7 @@
 #include "output.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -29,6 +30,9 @@ struct app {
     bool recording;
     bool running;
     float pending_level;
+    bool first_audio_logged;
+    size_t accepted_samples;
+    long last_throughput_ms;
     struct timespec last_level_sent;
     char selected_source[256];
 };
@@ -88,6 +92,28 @@ static void remove_client(struct app *app, size_t index) {
     app->clients[index] = -1;
 }
 
+/* VOICE_INPUT_DEBUG_TIMING traces the path from the start command to the first
+   committed text with millisecond stamps, so a perceived delay can be attributed
+   to capture, decoding or output instead of guessed at. */
+static bool debug_timing = false;
+static long timing_origin_ms = 0;
+
+static long monotonic_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * 1000L + now.tv_nsec / 1000000L;
+}
+
+static void timing_log(const char *format, ...) {
+    if (!debug_timing) return;
+    fprintf(stderr, "voice-inputd: +%5ld ms  ", monotonic_ms() - timing_origin_ms);
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fputc('\n', stderr);
+}
+
 static void send_to_client(struct app *app, size_t index, const char *message) {
     ssize_t sent = send(app->clients[index], message, strlen(message), MSG_NOSIGNAL);
     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) remove_client(app, index);
@@ -115,6 +141,13 @@ static int set_recording(struct app *app, bool recording) {
         broadcast_state(app, "state");
         return 0;
     }
+    if (recording) {
+        timing_origin_ms = monotonic_ms();
+        app->first_audio_logged = false;
+        app->accepted_samples = 0U;
+        app->last_throughput_ms = 0L;
+        timing_log("start command accepted");
+    }
     if (recording && !app->no_audio && vi_audio_start(app->audio) < 0) {
         broadcast(app, "{\"event\":\"error\",\"message\":\"pipewire-start-failed\"}\n");
         return -1;
@@ -123,6 +156,7 @@ static int set_recording(struct app *app, bool recording) {
         vi_audio_stop(app->audio);
         vi_asr_finish(app->asr);
     }
+    if (recording) timing_log("capture streams requested");
     app->recording = recording;
     broadcast_state(app, "state");
     return 0;
@@ -216,12 +250,19 @@ static void on_level(float rms, void *userdata) {
 
 static void on_transcript(const char *event, const char *text, void *userdata) {
     struct app *app = userdata;
+    timing_log("%s: %s", event, text);
     char message[8192];
     if (vi_json_text(message, sizeof(message), event, text) >= 0) {
         broadcast(app, message);
     }
-    if (strcmp(event, "final") == 0 && vi_output_commit(text) < 0) {
-        broadcast(app, "{\"event\":\"output-error\",\"backend\":\"fcitx5\"}\n");
+    if (strcmp(event, "final") == 0) {
+        const long before = monotonic_ms();
+        const int committed = vi_output_commit(text);
+        timing_log("fcitx commit %s in %ld ms",
+                   committed < 0 ? "failed" : "done", monotonic_ms() - before);
+        if (committed < 0) {
+            broadcast(app, "{\"event\":\"output-error\",\"backend\":\"fcitx5\"}\n");
+        }
     }
 }
 
@@ -230,8 +271,31 @@ static void process_audio(struct app *app) {
     float samples[4096];
     size_t count;
     while ((count = vi_audio_read(app->audio, samples, 4096)) > 0) {
+        if (!app->first_audio_logged) {
+            app->first_audio_logged = true;
+            timing_log("first audio reached ASR (%zu samples)", count);
+        }
+        app->accepted_samples += count;
+        const long before = monotonic_ms();
         (void)vi_asr_accept(app->asr, samples, count);
+        const long spent = monotonic_ms() - before;
+        if (spent >= 20L) {
+            timing_log("ASR decode of %zu samples took %ld ms", count, spent);
+        }
     }
+}
+
+/* Audio fed to the recogniser should track wall clock almost exactly; a ratio
+   well below 1 means capture is starving it, which looks the same to the user as
+   a slow model. */
+static void maybe_log_throughput(struct app *app) {
+    if (!debug_timing || !app->recording) return;
+    const long elapsed = monotonic_ms() - timing_origin_ms;
+    if (elapsed - app->last_throughput_ms < 1000L) return;
+    app->last_throughput_ms = elapsed;
+    const double fed_ms = (double)app->accepted_samples / 16.0;
+    timing_log("fed %.0f ms of audio over %ld ms wall (%.2fx realtime)",
+               fed_ms, elapsed, elapsed > 0 ? fed_ms / (double)elapsed : 0.0);
 }
 
 static void maybe_broadcast_level(struct app *app) {
@@ -272,6 +336,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     bool no_audio = false;
+    debug_timing = getenv("VOICE_INPUT_DEBUG_TIMING") != NULL;
     const char *model_directory = getenv("VOICE_INPUT_MODEL_DIR");
     int asr_threads = 2;
     for (int i = 1; i < argc; ++i) {
@@ -296,7 +361,8 @@ int main(int argc, char **argv) {
 
     struct app app = { .server_fd = -1, .audio = NULL, .asr = NULL,
                        .no_audio = no_audio,
-                       .recording = false, .running = true, .pending_level = -1.0F };
+                       .recording = false, .running = true, .pending_level = -1.0F,
+                       .first_audio_logged = false };
     for (size_t i = 0; i < MAX_CLIENTS; ++i) app.clients[i] = -1;
     if (!no_audio) {
         app.audio = vi_audio_create(on_level, &app);
@@ -337,6 +403,7 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
         process_audio(&app);
+        maybe_log_throughput(&app);
         maybe_broadcast_source(&app);
         maybe_broadcast_level(&app);
     }

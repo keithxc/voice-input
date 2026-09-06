@@ -3,6 +3,8 @@
 #include <LayerShellQt/Window>
 #include <QCommandLineParser>
 #include <QDebug>
+#include <QElapsedTimer>
+#include <cstdio>
 #include <QGuiApplication>
 #include <QImage>
 #include <QQmlApplicationEngine>
@@ -48,6 +50,26 @@ int main(int argc, char **argv) {
             LayerShellQt::Window::KeyboardInteractivityNone);
         layerWindow->setActivateOnShow(false);
         layerWindow->setWantsToBeOnActiveScreen(true);
+    }
+
+    // VOICE_INPUT_DEBUG_TIMING reports how long the panel takes to reach the
+    // screen after the daemon asks for it, which is dominated by scene graph and
+    // font setup on the very first show.
+    if (qEnvironmentVariableIsSet("VOICE_INPUT_DEBUG_TIMING")) {
+        static QElapsedTimer shown;
+        static bool pending = false;
+        QObject::connect(window, &QWindow::visibleChanged, window,
+                         [](bool visible) {
+                             if (!visible) return;
+                             shown.start();
+                             pending = true;
+                         });
+        QObject::connect(window, &QQuickWindow::frameSwapped, window, [] {
+            if (!pending) return;
+            pending = false;
+            fprintf(stderr, "voice-input-overlay: visible -> first frame: %lld ms\n",
+                    shown.elapsed());
+        });
     }
 
     if (parser.isSet(QStringLiteral("demo"))) {
