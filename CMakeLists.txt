@@ -23,7 +23,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick Test)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
-add_library(voice-input-common STATIC src/protocol.c src/selection.c)
+add_library(voice-input-common STATIC src/protocol.c src/score.c src/selection.c
+  src/text.c)
 target_include_directories(voice-input-common PUBLIC src)
 target_compile_options(voice-input-common PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
@@ -70,6 +71,9 @@ if(BUILD_TESTING)
   add_executable(protocol-test tests/protocol_test.c)
   target_link_libraries(protocol-test PRIVATE voice-input-common)
   add_test(NAME protocol COMMAND protocol-test)
+  add_executable(score-test tests/score_test.c)
+  target_link_libraries(score-test PRIVATE voice-input-common m)
+  add_test(NAME score COMMAND score-test)
   add_executable(selection-test tests/selection_test.c)
   target_link_libraries(selection-test PRIVATE voice-input-common)
   add_test(NAME selection COMMAND selection-test)
