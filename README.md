@@ -28,10 +28,16 @@ The first usable milestone includes:
 - a `sources` command reporting every discovered capture node with its state,
   level, noise floor, and score;
 - an opt-in pre-roll and a trailing tail so neither end of an utterance is cut;
+- automatic punctuation of the committed text by a local ct-transformer model,
+  applied to final text only and never to partials;
 - a native Fcitx5 addon that commits final text to the focused application;
+- model and decoder selection from the environment, so a model can be swapped
+  between two runs of the same build;
+- an offline benchmark that scores a recorded corpus for accuracy and latency
+  and reports Chinese and English error rates separately;
 - systemd user services, a Nix package, and automated protocol, source-selection,
-  integration, adaptive-gain, UI-model, QML rendering, normal-ASR, and quiet-ASR
-  tests.
+  integration, adaptive-gain, UI-model, QML rendering, error-rate scoring,
+  punctuation, normal-ASR, and quiet-ASR tests.
 
 No placeholder transcript is emitted: UI text and state come from the daemon's
 real event stream.
@@ -161,6 +167,123 @@ the first audio into the recogniser, every partial and final, the text commit,
 and a throughput ratio, so a perceived delay can be attributed rather than
 guessed at.
 
+## Punctuation
+
+Final text is punctuated before it is committed. The recogniser produces bare
+words; a local ct-transformer model turns them into a sentence:
+
+```text
+帮我看一下这个buffer应该怎么处理然后把return value检查一下
+帮我看一下这个 buffer 应该怎么处理，然后把 return value 检查一下。
+```
+
+The model is `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8`,
+packaged by Nix with a pinned hash like the recognition model, loaded once when
+the daemon starts and never reloaded. It costs **0.6-21 ms** per utterance
+depending on sentence length, measured on this machine, and runs only on the
+final text: partials are redrawn several times a second and are left alone.
+
+It punctuates every language in Chinese, so an utterance holding no Chinese
+character has its marks rewritten in ASCII -- nothing is added or removed.
+
+Punctuation is optional and its failure is not fatal. Without the model the
+daemon commits unpunctuated text and reports `punctuation: unavailable`:
+
+```sh
+VOICE_INPUT_PUNCTUATION=0 voice-inputd          # off
+VOICE_INPUT_PUNCT_MODEL=/path/to/model voice-inputd
+```
+
+## Choosing a model
+
+Recognition is configured from the environment, so swapping a model needs no
+rebuild:
+
+```sh
+VOICE_INPUT_ASR_MODEL=~/models/some-streaming-zipformer \
+VOICE_INPUT_ASR_DECODER=modified_beam_search \
+VOICE_INPUT_ASR_THREADS=4 voice-inputd
+```
+
+The loader reads whatever files the model directory holds rather than one
+release's names: encoder + decoder + joiner is a transducer, encoder + decoder
+a Paraformer, a single model file a zipformer2 CTC. Quantised weights are
+preferred; `VOICE_INPUT_ASR_INT8=0` asks for float ones. Hotwords
+(`VOICE_INPUT_ASR_HOTWORDS`) need `modified_beam_search` -- the greedy decoder
+accepts the setting and ignores it.
+
+`voice-inputctl status` reports what is actually loaded:
+
+```text
+state:             idle
+audio:             ready
+asr:               ready
+asr-backend:       sherpa-cpu
+asr-model:         voice-input-streaming-zipformer-zh-en
+asr-kind:          transducer
+decoder:           greedy_search
+threads:           2
+punctuation:       enabled
+punctuation-model: model.int8.onnx
+sample-rate:       16000
+tail-ms:           250
+```
+
+## Measuring accuracy and latency
+
+Recognition changes trade one thing for another, so they are judged against a
+recorded corpus rather than an impression. `tests/asr/cases.txt` holds a fixed
+prompt set built around what this project actually dictates: Chinese sentences
+carrying English identifiers, plain Chinese, plain English, quiet speech and
+speech over noise. Record it once:
+
+```sh
+./scripts/record-corpus.sh ~/voice-input-corpus
+```
+
+Each prompt is recorded separately at 16 kHz mono; prompts already recorded are
+skipped, so the corpus can be finished over several sittings. Recordings stay
+outside the repository. Then measure:
+
+```sh
+./result/bin/voice-input-asr-bench ~/voice-input-corpus/manifest.tsv
+```
+
+The report gives, per clip, per tag and in total: a character error rate for
+Han characters and a word error rate for Latin words **separately**, the time
+from speech onset to the first partial, the time from the end of speech to the
+final text, the punctuation cost, the decode time as a fraction of realtime,
+peak RSS and CPU. Keeping the two error rates apart matters for a bilingual
+model: one averaged number hides which of the two halves a change made worse.
+Substitutions, deletions and insertions are counted apart, because tuning that
+trades one against the other cannot be read from a single total.
+
+Audio is fed **paced at realtime** by default, because replaying a wav file as
+fast as the CPU allows measures throughput and says nothing about what a
+speaker waits for. `--fast` turns the pacing off when only accuracy matters.
+
+Any model can be scored against the same clips without rebuilding:
+
+```sh
+./result/bin/voice-input-asr-bench --model ~/models/other-model \
+    --decoder modified_beam_search --threads 4 ~/voice-input-corpus/manifest.tsv
+```
+
+Spacing, letter case, punctuation and fullwidth forms are normalised away
+before comparison, so only recognition differences are counted. Number words
+are not: a reference reading "三点" against a transcript of "3点" scores as an
+error on purpose, because the text that lands in the application is what is
+being measured. The comparison itself is unit tested (`ctest -R score`), so it
+needs neither the model nor a microphone to be trusted.
+
+A manifest is one clip per line, `path<TAB>tags<TAB>reference`, with paths
+resolved against the manifest's own directory, so any recording can be scored
+by adding a line to it. A reference of `-` times a clip without scoring it.
+
+See [`BENCHMARK.md`](BENCHMARK.md) for measured results and
+[`CURRENT_ARCHITECTURE.md`](CURRENT_ARCHITECTURE.md) for what the code does
+today.
+
 ## Architecture
 
 ```text
@@ -173,8 +296,8 @@ global shortcut / CLI
      voice-inputd (C17)
           |
           +---- parallel PipeWire capture + automatic source selection
-          +---- sherpa-onnx streaming ASR
-          +---- Fcitx5 text commit
+          +---- sherpa-onnx streaming ASR  ---- partial ---> overlay
+          +---- ct-transformer punctuation ---- final -----> Fcitx5 commit
 ```
 
 See [`SPEC.md`](SPEC.md) for the implementation constraints and reference
@@ -185,11 +308,13 @@ projects supplied for the project.
 Audio is processed locally. The project does not contain employer source code,
 proprietary SDKs, private logs, customer data, or confidential configuration.
 
-The default model is the official sherpa-onnx bilingual Chinese/English
-streaming Zipformer. Nix downloads it from the upstream release with a pinned
-SHA-256 hash and extracts only the INT8 encoder/joiner, decoder, tokens, and a
-test fixture. sherpa-onnx is Apache-2.0 licensed; consult the upstream model
-documentation for model and training-data terms.
+The default models are the official sherpa-onnx bilingual Chinese/English
+streaming Zipformer and the ct-transformer Chinese/English punctuation model.
+Nix downloads both from the upstream releases with pinned SHA-256 hashes and
+extracts only the INT8 weights, tokens, and a test fixture. Nothing is
+downloaded at runtime, and no audio or text leaves the machine. sherpa-onnx is
+Apache-2.0 licensed; consult the upstream model documentation for model and
+training-data terms.
 
 ## License
 

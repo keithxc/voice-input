@@ -28,14 +28,25 @@ UI-model, QML rendering, normal-ASR, and 4%-volume quiet-ASR decoding tests; a
 live session emits microphone level events and the overlay stays above normal
 Plasma windows without taking focus.
 
-## v0.2 — Desktop integration and measurement
+## v0.2 — Accuracy, punctuation and measurement (in progress)
 
+- Offline benchmark over a fixed recorded corpus, reporting Chinese and English
+  error rates separately alongside first-partial, finalisation and punctuation
+  latency (done)
+- Automatic punctuation of final text through the local ct-transformer model,
+  packaged in Nix, off the partial path (done)
+- Model, decoder and thread selection from the environment, with no rebuild
+  and no runtime download (done)
+- `voice-inputctl status` reporting the loaded model, decoder and punctuation
+  state (done)
+- Record the corpus and take the accuracy baseline (pending: needs a speaker)
+- Evaluate alternative streaming models against that baseline and choose the
+  default on measurement (pending the baseline)
 - Clipboard/libei fallback with explicit backend reporting
 - KDE global shortcut and Home Manager/NixOS module
-- Measure first-partial and finalization latency on the Ryzen AI 9 HX 370 CPU
 
-Checkpoint: press one shortcut, speak, see partial text, and commit final text
-into native Wayland and Electron applications.
+Checkpoint: press one shortcut, speak, see partial text, and commit punctuated
+final text into native Wayland and Electron applications.
 
 ## Later
 
