@@ -13,6 +13,8 @@
 #define VI_SPEECH_SOURCE_HOLD_MS 1200L
 #define VI_SWITCH_MIN_RMS 0.001F
 #define VI_SWITCH_MIN_CHUNKS 4U
+#define VI_WARMUP_MS 400L
+#define VI_WARMUP_MIN_CHUNKS 2U
 
 #define VI_NO_SOURCE (-1)
 
@@ -30,6 +32,7 @@ struct vi_selection {
     unsigned candidate_votes;
     long last_switch_ms;
     long last_speech_ms;
+    long warmup_until_ms;
 };
 
 void vi_selection_reset(struct vi_selection *state);

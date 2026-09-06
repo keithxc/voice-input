@@ -62,6 +62,46 @@ static void rebootstraps_when_the_selected_source_drops(void) {
     assert(vi_selection_update(&state, sources, 2, 1, 1200L) == 1);
 }
 
+/* Bootstrap takes whichever source delivers first, which is arbitrary; the
+   warm-up window must correct that in milliseconds, not after a vote run. */
+static void corrects_an_unlucky_first_pick_during_warmup(void) {
+    struct vi_source_stats sources[2] = {
+        delivering(0.2F, 1.0F, 8U),
+        delivering(0.2F, 50.0F, 8U),
+    };
+    struct vi_selection state;
+    bootstrap_onto_first(&state, sources, 2);
+    assert(vi_selection_update(&state, sources, 2, 1, VI_WARMUP_MS - 1L) == 1);
+    assert(state.candidate_votes == 0U);
+}
+
+static void ignores_a_source_without_enough_chunks_during_warmup(void) {
+    struct vi_source_stats sources[2] = {
+        delivering(0.2F, 1.0F, 8U),
+        delivering(0.2F, 50.0F, VI_WARMUP_MIN_CHUNKS - 1U),
+    };
+    struct vi_selection state;
+    bootstrap_onto_first(&state, sources, 2);
+    assert(vi_selection_update(&state, sources, 2, 1, VI_WARMUP_MS - 1L) == 0);
+}
+
+/* Once warm-up is over the hysteresis must apply again, otherwise the source
+   would flap between microphones mid-sentence. The speech hold outlasts warm-up,
+   so nothing can even start voting until it has expired too. */
+static void stops_taking_sources_outright_after_warmup(void) {
+    struct vi_source_stats sources[2] = {
+        delivering(0.2F, 1.0F, 8U),
+        delivering(0.2F, 50.0F, 8U),
+    };
+    struct vi_selection state;
+    bootstrap_onto_first(&state, sources, 2);
+    assert(vi_selection_update(&state, sources, 2, 1, VI_WARMUP_MS) == 0);
+    assert(state.candidate_votes == 0U);
+    const long settled = VI_SPEECH_SOURCE_HOLD_MS + VI_SWITCH_COOLDOWN_MS;
+    assert(vi_selection_update(&state, sources, 2, 1, settled) == 0);
+    assert(state.candidate_votes == 1U);
+}
+
 static void keeps_the_source_within_the_margin(void) {
     struct vi_source_stats sources[2] = {
         delivering(0.2F, 10.0F, 8U),
@@ -149,6 +189,9 @@ int main(void) {
     bootstraps_below_the_switching_threshold();
     waits_for_a_source_that_delivers();
     rebootstraps_when_the_selected_source_drops();
+    corrects_an_unlucky_first_pick_during_warmup();
+    ignores_a_source_without_enough_chunks_during_warmup();
+    stops_taking_sources_outright_after_warmup();
     keeps_the_source_within_the_margin();
     switches_only_after_a_full_vote_run();
     only_the_reporting_source_votes();

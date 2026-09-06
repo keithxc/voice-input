@@ -25,6 +25,13 @@ static int best_source(const struct vi_source_stats *sources, size_t count,
 }
 
 static void commit(struct vi_selection *state, int index, long now_ms) {
+    /* Bootstrap has to take whichever source happens to deliver first, which is
+       arbitrary. Allow a short window afterwards in which a better source can be
+       taken outright, so an unlucky first pick is corrected in milliseconds
+       rather than after a full margin-and-vote run. */
+    if (state->selected == VI_NO_SOURCE) {
+        state->warmup_until_ms = now_ms + VI_WARMUP_MS;
+    }
     state->selected = index;
     state->candidate = VI_NO_SOURCE;
     state->candidate_votes = 0U;
@@ -44,6 +51,7 @@ void vi_selection_reset(struct vi_selection *state) {
     state->candidate_votes = 0U;
     state->last_switch_ms = 0L;
     state->last_speech_ms = 0L;
+    state->warmup_until_ms = 0L;
 }
 
 int vi_selection_update(struct vi_selection *state,
@@ -61,6 +69,17 @@ int vi_selection_update(struct vi_selection *state,
            queued and the recogniser would stay silent. */
         const int bootstrap = best_source(sources, count, false);
         if (bootstrap != VI_NO_SOURCE) commit(state, bootstrap, now_ms);
+        return state->selected;
+    }
+
+    if (now_ms < state->warmup_until_ms) {
+        const int best = best_source(sources, count, false);
+        if (best != VI_NO_SOURCE && best != state->selected &&
+            sources[best].chunks >= VI_WARMUP_MIN_CHUNKS &&
+            sources[best].score > sources[state->selected].score) {
+            commit(state, best, now_ms);
+        }
+        clear_votes(state);
         return state->selected;
     }
 

@@ -51,7 +51,10 @@ ratio, useful signal level, and clipping. The daemon sends only the clearest
 source to ASR and uses a margin, consecutive votes, and a cooldown before
 switching. Selection is bootstrapped on the first source that delivers buffers,
 however quiet, so a low-output built-in microphone still reaches the recogniser;
-the quality thresholds then apply only to switching away from it. The arbitration
+the quality thresholds then apply only to switching away from it. Because that
+first pick is whichever source happens to deliver first, a short warm-up window
+lets a better-scoring source be taken outright, so an unlucky pick costs
+milliseconds instead of a full margin-and-vote run. The arbitration
 rules live in `src/selection.c` as a pure function over plain source statistics,
 so they are unit tested without an audio server. Once speech begins, the chosen source is held through short pauses
 so an utterance cannot be split by quality fluctuations. Newly connected USB
