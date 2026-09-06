@@ -4,6 +4,7 @@
 #include "asr.h"
 #include "protocol.h"
 #include "output.h"
+#include "punctuation.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -26,6 +27,8 @@ struct app {
     int clients[MAX_CLIENTS];
     struct vi_audio *audio;
     struct vi_asr *asr;
+    struct vi_punctuation *punctuation;
+    bool punctuation_wanted;
     bool no_audio;
     bool recording;
     bool running;
@@ -145,6 +148,11 @@ static void broadcast(struct app *app, const char *message) {
     }
 }
 
+static const char *punctuation_state(const struct app *app) {
+    if (!app->punctuation_wanted) return "disabled";
+    return app->punctuation != NULL ? "enabled" : "unavailable";
+}
+
 static const char *current_audio_state(const struct app *app) {
     return app->no_audio ? "disabled" : vi_audio_state(app->audio);
 }
@@ -217,9 +225,28 @@ static int set_recording(struct app *app, bool recording) {
 static void handle_command(struct app *app, size_t index, const char *line) {
     enum vi_command command = vi_parse_command(line);
     switch (command) {
-    case VI_COMMAND_STATUS:
+    case VI_COMMAND_STATUS: {
         broadcast_state(app, "state");
+        struct vi_status status = {
+            .recording = app->recording,
+            .audio = current_audio_state(app),
+            .asr = vi_asr_state(app->asr),
+            .asr_backend = app->asr != NULL ? "sherpa-cpu" : "none",
+            .asr_model = vi_asr_model_name(app->asr),
+            .asr_kind = vi_asr_model_kind(app->asr),
+            .decoder = vi_asr_decoder(app->asr),
+            .threads = vi_asr_threads(app->asr),
+            .punctuation = punctuation_state(app),
+            .punctuation_model = vi_punctuation_model(app->punctuation),
+            .sample_rate = 16000,
+            .tail_ms = tail_ms,
+        };
+        char message[1024];
+        if (vi_json_info(message, sizeof(message), &status) > 0) {
+            send_to_client(app, index, message);
+        }
         break;
+    }
     case VI_COMMAND_START:
         (void)set_recording(app, true);
         break;
@@ -300,21 +327,42 @@ static void on_level(float rms, void *userdata) {
     app->pending_level = rms;
 }
 
+/* Partials are redrawn several times a second and are never committed, so they
+   stay on the fast path untouched. Only the final text is punctuated, once,
+   immediately before it is handed to Fcitx5. */
 static void on_transcript(const char *event, const char *text, void *userdata) {
     struct app *app = userdata;
     timing_log("%s: %s", event, text);
+    if (strcmp(event, "final") != 0) {
+        char partial[8192];
+        if (vi_json_text(partial, sizeof(partial), event, text) >= 0) {
+            broadcast(app, partial);
+        }
+        return;
+    }
+
+    static char final_text[8192];
+    (void)snprintf(final_text, sizeof(final_text), "%s", text);
+    if (app->punctuation != NULL) {
+        const long before = monotonic_ms();
+        if (vi_punctuation_apply(app->punctuation, text, final_text,
+                                 sizeof(final_text)) < 0) {
+            timing_log("punctuation failed; committing the raw text");
+        } else {
+            timing_log("punctuated in %ld ms: %s", monotonic_ms() - before,
+                       final_text);
+        }
+    }
     char message[8192];
-    if (vi_json_text(message, sizeof(message), event, text) >= 0) {
+    if (vi_json_text(message, sizeof(message), event, final_text) >= 0) {
         broadcast(app, message);
     }
-    if (strcmp(event, "final") == 0) {
-        const long before = monotonic_ms();
-        const int committed = vi_output_commit(text);
-        timing_log("fcitx commit %s in %ld ms",
-                   committed < 0 ? "failed" : "done", monotonic_ms() - before);
-        if (committed < 0) {
-            broadcast(app, "{\"event\":\"output-error\",\"backend\":\"fcitx5\"}\n");
-        }
+    const long before = monotonic_ms();
+    const int committed = vi_output_commit(final_text);
+    timing_log("fcitx commit %s in %ld ms",
+               committed < 0 ? "failed" : "done", monotonic_ms() - before);
+    if (committed < 0) {
+        broadcast(app, "{\"event\":\"output-error\",\"backend\":\"fcitx5\"}\n");
     }
 }
 
@@ -380,6 +428,7 @@ static void usage(FILE *stream) {
     fprintf(stream,
             "Usage: voice-inputd [--socket PATH] [--model DIR] [--threads N]\n"
             "                    [--decoder greedy_search|modified_beam_search]\n"
+            "                    [--punct-model DIR] [--no-punctuation]\n"
             "                    [--no-audio] [--version]\n");
 }
 
@@ -445,6 +494,13 @@ int main(int argc, char **argv) {
     asr_config.rule2_min_trailing_silence =
         environment_seconds("VOICE_INPUT_ENDPOINT_RULE2_MS",
                             asr_config.rule2_min_trailing_silence);
+    const char *punctuation_directory =
+        environment_text("VOICE_INPUT_PUNCT_MODEL",
+                         getenv("VOICE_INPUT_PUNCT_MODEL_DIR"));
+    bool punctuation_wanted =
+        environment_long("VOICE_INPUT_PUNCTUATION", 1, 0, 1) != 0;
+    const int punctuation_threads =
+        (int)environment_long("VOICE_INPUT_PUNCT_THREADS", 1, 1, 32);
     int asr_threads = asr_config.threads;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -459,6 +515,10 @@ int main(int argc, char **argv) {
             if (asr_threads < 1 || asr_threads > 32) return EXIT_FAILURE;
         } else if (strcmp(argv[i], "--decoder") == 0 && i + 1 < argc) {
             asr_config.decoding_method = argv[++i];
+        } else if (strcmp(argv[i], "--punct-model") == 0 && i + 1 < argc) {
+            punctuation_directory = argv[++i];
+        } else if (strcmp(argv[i], "--no-punctuation") == 0) {
+            punctuation_wanted = false;
         } else if (strcmp(argv[i], "--version") == 0) {
             puts("voice-inputd " VOICE_INPUT_VERSION);
             return EXIT_SUCCESS;
@@ -472,6 +532,10 @@ int main(int argc, char **argv) {
     asr_config.threads = asr_threads;
 
     struct app app = { .server_fd = -1, .audio = NULL, .asr = NULL,
+                       .punctuation = NULL,
+                       /* --no-audio never loads a recogniser, so there is
+                          nothing to punctuate and no model worth loading. */
+                       .punctuation_wanted = punctuation_wanted && !no_audio,
                        .no_audio = no_audio,
                        .recording = false, .running = true, .pending_level = -1.0F,
                        .first_audio_logged = false, .tail_until_ms = 0L };
@@ -494,6 +558,24 @@ int main(int argc, char **argv) {
                     "voice-inputd: ASR model loaded from %s (%s, %s, %d threads)\n",
                     model_directory, vi_asr_model_kind(app.asr),
                     vi_asr_decoder(app.asr), vi_asr_threads(app.asr));
+        }
+        /* Punctuation is a second model on the commit path. It is optional on
+           purpose: the daemon has to stay usable when it is missing, so a
+           failure here is reported and then ignored. */
+        if (punctuation_wanted && punctuation_directory != NULL &&
+            punctuation_directory[0] != '\0') {
+            const long before = monotonic_ms();
+            app.punctuation =
+                vi_punctuation_create(punctuation_directory, punctuation_threads);
+            if (app.punctuation != NULL) {
+                fprintf(stderr,
+                        "voice-inputd: punctuation model loaded from %s in %ld ms\n",
+                        punctuation_directory, monotonic_ms() - before);
+            } else {
+                fprintf(stderr,
+                        "voice-inputd: punctuation unavailable; committing "
+                        "unpunctuated text\n");
+            }
         }
     }
     app.server_fd = create_server(socket_path);
@@ -530,5 +612,6 @@ int main(int argc, char **argv) {
     unlink(socket_path);
     vi_audio_destroy(app.audio);
     vi_asr_destroy(app.asr);
+    vi_punctuation_destroy(app.punctuation);
     return EXIT_SUCCESS;
 }

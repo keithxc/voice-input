@@ -15,6 +15,31 @@ static void usage(FILE *stream) {
           "Commands: status, start, stop, toggle, sources, monitor, quit\n", stream);
 }
 
+/* The daemon speaks JSON so the overlay does not need a parser, but `status`
+   is read by a person, so render that one event as plain lines. */
+static void print_status(const char *json) {
+    static const struct { const char *key; const char *label; } fields[] = {
+        { "audio", "audio" },           { "asr", "asr" },
+        { "asr-backend", "asr-backend" },
+        { "asr-model", "asr-model" },   { "asr-kind", "asr-kind" },
+        { "decoder", "decoder" },       { "threads", "threads" },
+        { "punctuation", "punctuation" },
+        { "punctuation-model", "punctuation-model" },
+        { "sample-rate", "sample-rate" }, { "tail-ms", "tail-ms" },
+    };
+    char value[256];
+    if (vi_json_field(json, "recording", value, sizeof(value)) > 0) {
+        printf("%-18s %s\n", "state:", strcmp(value, "true") == 0 ? "recording"
+                                                                 : "idle");
+    }
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        if (vi_json_field(json, fields[i].key, value, sizeof(value)) <= 0) continue;
+        char label[32];
+        snprintf(label, sizeof(label), "%s:", fields[i].label);
+        printf("%-18s %s\n", label, value);
+    }
+}
+
 static int connect_socket(const char *path) {
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -54,7 +79,8 @@ int main(int argc, char **argv) {
         usage(stderr);
         return EXIT_FAILURE;
     }
-    bool monitor = strcmp(command, "monitor") == 0;
+    const bool monitor = strcmp(command, "monitor") == 0;
+    const bool status = strcmp(command, "status") == 0;
     if (!monitor && vi_parse_command(command) == VI_COMMAND_INVALID) {
         usage(stderr);
         return EXIT_FAILURE;
@@ -87,10 +113,20 @@ int main(int argc, char **argv) {
     static char line[16384];
     int lines_needed = monitor ? -1 : 2;
     while (fgets(line, sizeof(line), input) != NULL) {
+        const size_t length = strlen(line);
+        const bool complete = length > 0U && line[length - 1U] == '\n';
+        /* status waits for the reply addressed to it rather than a line count,
+           so an event broadcast in between cannot be mistaken for the answer. */
+        if (status) {
+            if (complete && strstr(line, "\"event\":\"info\"") != NULL) {
+                print_status(line);
+                break;
+            }
+            continue;
+        }
         fputs(line, stdout);
         fflush(stdout);
-        const size_t length = strlen(line);
-        if (length > 0U && line[length - 1U] != '\n') continue;
+        if (!complete) continue;
         if (lines_needed > 0 && --lines_needed == 0) break;
     }
     fclose(input);

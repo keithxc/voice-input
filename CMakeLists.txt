@@ -29,7 +29,8 @@ target_include_directories(voice-input-common PUBLIC src)
 target_compile_options(voice-input-common PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
-add_executable(voice-inputd src/daemon.c src/audio.c src/asr.c src/output.c)
+add_executable(voice-inputd src/daemon.c src/audio.c src/asr.c src/output.c
+  src/punctuation.c)
 target_include_directories(voice-inputd PRIVATE "${SHERPA_ONNX_INCLUDE_DIR}")
 target_link_libraries(voice-inputd PRIVATE voice-input-common PkgConfig::PIPEWIRE
   "${SHERPA_ONNX_C_API}" m)

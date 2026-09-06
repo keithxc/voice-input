@@ -12,6 +12,22 @@
         url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2";
         hash = "sha256-J/+9nuJK0YbZmswvY1TXmSsnvKtJCBJRBmX6j5OJxfg=";
       };
+      punctuationArchive = pkgs.fetchurl {
+        url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2";
+        hash = "sha256-wNWqX47raGAyNF4YC+3zkxncLgVWeBxiZLytuoMopuE=";
+      };
+      # The int8 weights are a quarter of the float ones (75 MB against 294 MB)
+      # and load in a fraction of the time; the daemon holds this model for its
+      # whole life, so the smaller one is the one to ship.
+      punctuationModel = pkgs.runCommand "voice-input-punct-ct-transformer-zh-en" {
+        nativeBuildInputs = [ pkgs.bzip2 pkgs.gnutar ];
+      } ''
+        mkdir -p "$out"
+        model=sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8
+        tar -xjf ${punctuationArchive} -C "$out" --strip-components=1 \
+          "$model/model.int8.onnx" \
+          "$model/tokens.json"
+      '';
       streamingModel = pkgs.runCommand "voice-input-streaming-zipformer-zh-en" {
         nativeBuildInputs = [ pkgs.bzip2 pkgs.gnutar ];
       } ''
@@ -60,7 +76,8 @@
           substituteInPlace "$out/lib/systemd/user/voice-input-overlay.service" \
             --replace-fail '@out@' "$out"
           wrapProgram "$out/bin/voice-inputd" \
-            --set-default VOICE_INPUT_MODEL_DIR ${streamingModel}
+            --set-default VOICE_INPUT_MODEL_DIR ${streamingModel} \
+            --set-default VOICE_INPUT_PUNCT_MODEL_DIR ${punctuationModel}
         '';
       };
 

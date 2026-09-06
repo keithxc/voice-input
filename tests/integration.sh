@@ -24,7 +24,10 @@ for _ in {1..50}; do
 done
 [[ -S "$socket_path" ]]
 
-"$ctl" --socket "$socket_path" status | grep -q '"recording":false'
+status=$("$ctl" --socket "$socket_path" status)
+grep -q '^state: *idle' <<<"$status"
+grep -q '^asr: *disabled' <<<"$status"
+grep -q '^punctuation:' <<<"$status"
 "$ctl" --socket "$socket_path" start | grep -q '"recording":true'
 "$ctl" --socket "$socket_path" toggle | grep -q '"recording":false'
 "$ctl" --socket "$socket_path" quit | grep -q '"stopping"'

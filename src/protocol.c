@@ -67,6 +67,47 @@ int vi_json_state(char *buffer, size_t size, const char *event, bool recording,
                     event, recording ? "true" : "false", audio_state, asr_state);
 }
 
+int vi_json_info(char *buffer, size_t size, const struct vi_status *status) {
+    if (buffer == NULL || size == 0 || status == NULL) return -1;
+    return snprintf(buffer, size,
+                    "{\"event\":\"info\",\"recording\":%s,\"audio\":\"%s\","
+                    "\"asr\":\"%s\",\"asr-backend\":\"%s\",\"asr-model\":\"%s\","
+                    "\"asr-kind\":\"%s\",\"decoder\":\"%s\",\"threads\":%d,"
+                    "\"punctuation\":\"%s\",\"punctuation-model\":\"%s\","
+                    "\"sample-rate\":%d,\"tail-ms\":%ld}\n",
+                    status->recording ? "true" : "false", status->audio,
+                    status->asr, status->asr_backend, status->asr_model,
+                    status->asr_kind, status->decoder, status->threads,
+                    status->punctuation, status->punctuation_model,
+                    status->sample_rate, status->tail_ms);
+}
+
+int vi_json_field(const char *json, const char *key, char *value, size_t size) {
+    if (json == NULL || key == NULL || value == NULL || size == 0) return -1;
+    char needle[64];
+    int written = snprintf(needle, sizeof(needle), "\"%s\":", key);
+    if (written < 0 || (size_t)written >= sizeof(needle)) return -1;
+    const char *found = strstr(json, needle);
+    if (found == NULL) return -1;
+    const char *cursor = found + written;
+    size_t used = 0;
+    if (*cursor == '"') {
+        for (++cursor; *cursor != '"'; ++cursor) {
+            if (*cursor == '\0') return -1;
+            if (*cursor == '\\' && cursor[1] != '\0') ++cursor;
+            if (used + 1U >= size) return -1;
+            value[used++] = *cursor;
+        }
+    } else {
+        for (; *cursor != ',' && *cursor != '}' && *cursor != '\0'; ++cursor) {
+            if (used + 1U >= size) return -1;
+            value[used++] = *cursor;
+        }
+    }
+    value[used] = '\0';
+    return (int)used;
+}
+
 int vi_json_escape(char *buffer, size_t size, const char *value) {
     if (buffer == NULL || size == 0 || value == NULL) return -1;
     size_t used = 0U;
