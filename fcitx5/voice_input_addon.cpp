@@ -9,11 +9,14 @@
 
 #include <arpa/inet.h>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <future>
+#include <memory>
 #include <string>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -74,7 +77,7 @@ private:
         return true;
     }
 
-    void commit(std::string text) {
+    bool commit(std::string text) {
         InputContext *context = instance_->mostRecentInputContext();
         if (context == nullptr || !context->hasFocus()) {
             context = nullptr;
@@ -89,9 +92,11 @@ private:
         }
         if (context != nullptr) {
             context->commitString(text);
+            return true;
         } else {
             FCITX_LOGC(voiceInputLog, Warn)
                 << "No focused input context; transcript was not committed";
+            return false;
         }
     }
 
@@ -102,10 +107,15 @@ private:
         if (length == 0 || length > 65535U) return;
         std::string text(length, '\0');
         if (!receiveAll(client, text.data(), text.size())) return;
-        dispatcher_.schedule([this, text = std::move(text)]() mutable {
-            commit(std::move(text));
+        auto completion = std::make_shared<std::promise<bool>>();
+        std::future<bool> result = completion->get_future();
+        dispatcher_.schedule([this, text = std::move(text), completion]() mutable {
+            completion->set_value(commit(std::move(text)));
         });
-        const unsigned char acknowledgment = 1;
+        const bool committed = result.wait_for(std::chrono::seconds(1)) ==
+                                   std::future_status::ready &&
+                               result.get();
+        const unsigned char acknowledgment = committed ? 1 : 0;
         (void)send(client, &acknowledgment, 1, MSG_NOSIGNAL);
     }
 

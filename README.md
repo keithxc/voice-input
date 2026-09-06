@@ -8,7 +8,7 @@ domain socket protocol, sherpa-onnx streaming recognition, and a thin Qt/QML
 overlay. Fcitx5 is the preferred text commit path; libei and clipboard paste are
 fallbacks.
 
-## Status: v0.1 usable CLI and Fcitx5 input path
+## Status: v0.1 usable desktop input path
 
 The first usable milestone includes:
 
@@ -16,13 +16,17 @@ The first usable milestone includes:
 - native PipeWire capture at 16 kHz, mono, signed 16-bit PCM;
 - a local Unix socket command/event protocol;
 - start, stop, toggle, status, monitor, and clean shutdown commands;
-- throttled real-time RMS level events for the future overlay;
+- throttled real-time RMS level events;
 - sherpa-onnx streaming Zipformer recognition for Chinese and English;
 - partial/final transcript events and endpoint detection;
+- a non-focusable Qt6/QML Wayland layer-shell overlay showing recording,
+  recognition, partial text, audio level, commit success, and output errors;
 - a native Fcitx5 addon that commits final text to the focused application;
-- a systemd user service, Nix package, and automated tests.
+- systemd user services, a Nix package, and automated protocol, integration,
+  UI-model, QML rendering, and real-model tests.
 
-The Qt/QML overlay is the next milestone. No placeholder transcript is emitted.
+No placeholder transcript is emitted: UI text and state come from the daemon's
+real event stream.
 
 ## Build
 
@@ -48,6 +52,12 @@ model automatically:
 ./result/bin/voice-inputd
 ```
 
+Start the desktop overlay in the graphical session:
+
+```sh
+./result/bin/voice-input-overlay
+```
+
 Control it from another terminal:
 
 ```sh
@@ -59,7 +69,7 @@ Control it from another terminal:
 
 The default socket is
 `$XDG_RUNTIME_DIR/voice-input/voice-input.sock`. Events are newline-delimited
-JSON, so the future QML process does not need to link against the audio core.
+JSON, so the QML process does not link against the audio core.
 
 For a control-path test without a microphone or PipeWire session:
 
@@ -74,7 +84,7 @@ For a control-path test without a microphone or PipeWire session:
 global shortcut / CLI
           |
           v
-   Unix domain socket <---- future Qt/QML overlay
+   Unix domain socket <---- Qt/QML layer-shell overlay
           |
           v
      voice-inputd (C17)

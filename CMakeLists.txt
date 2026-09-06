@@ -18,6 +18,10 @@ find_path(SHERPA_ONNX_INCLUDE_DIR sherpa-onnx/c-api/c-api.h REQUIRED)
 find_library(SHERPA_ONNX_C_API sherpa-onnx-c-api REQUIRED)
 find_package(Fcitx5Core 5.0 REQUIRED)
 find_package(Fcitx5Utils REQUIRED)
+find_package(LayerShellQt REQUIRED)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick Test)
+
+qt_standard_project_setup(REQUIRES 6.5)
 
 add_library(voice-input-common STATIC src/protocol.c)
 target_include_directories(voice-input-common PUBLIC src)
@@ -39,11 +43,26 @@ target_compile_options(voice-inputctl PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
 install(TARGETS voice-inputd voice-inputctl RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+qt_add_executable(voice-input-overlay
+  overlay/main.cpp
+  overlay/overlay_model.cpp
+  overlay/overlay_model.h)
+target_link_libraries(voice-input-overlay PRIVATE
+  LayerShellQt::Interface Qt6::Core Qt6::Gui Qt6::Network Qt6::Qml Qt6::Quick)
+set_source_files_properties(overlay/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
+qt_add_qml_module(voice-input-overlay
+  URI VoiceInput
+  VERSION 1.0
+  QML_FILES overlay/Main.qml)
+install(TARGETS voice-input-overlay
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 add_library(voice-input-fcitx5 MODULE fcitx5/voice_input_addon.cpp)
 target_link_libraries(voice-input-fcitx5 PRIVATE Fcitx5::Core Fcitx5::Utils)
 install(TARGETS voice-input-fcitx5 DESTINATION "${FCITX_INSTALL_ADDONDIR}")
 install(FILES fcitx5/voice-input.conf DESTINATION "${FCITX_INSTALL_PKGDATADIR}/addon")
-install(FILES data/voice-inputd.service
+install(FILES data/voice-inputd.service data/voice-input-overlay.service
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/user)
 
 if(BUILD_TESTING)
@@ -54,6 +73,44 @@ if(BUILD_TESTING)
   add_test(NAME integration
     COMMAND "${BASH_PROGRAM}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration.sh"
             "$<TARGET_FILE:voice-inputd>" "$<TARGET_FILE:voice-inputctl>")
+  qt_add_executable(overlay-model-test
+    tests/overlay_model_test.cpp
+    overlay/overlay_model.cpp
+    overlay/overlay_model.h)
+  target_include_directories(overlay-model-test PRIVATE overlay)
+  target_link_libraries(overlay-model-test PRIVATE
+    Qt6::Core Qt6::Network Qt6::Test)
+  add_test(NAME overlay-model COMMAND overlay-model-test)
+  file(MAKE_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/test-cache"
+    "${CMAKE_CURRENT_BINARY_DIR}/test-home"
+    "${CMAKE_CURRENT_BINARY_DIR}/test-runtime")
+  file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/test-runtime"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+  set(overlay_test_environment
+    "HOME=${CMAKE_CURRENT_BINARY_DIR}/test-home"
+    "QT_QPA_PLATFORM=offscreen"
+    "QT_QUICK_BACKEND=software"
+    "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-cache"
+    "XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-runtime")
+  if(VOICE_INPUT_TEST_FONTCONFIG)
+    list(APPEND overlay_test_environment
+      "FONTCONFIG_FILE=${VOICE_INPUT_TEST_FONTCONFIG}")
+  endif()
+  if(VOICE_INPUT_TEST_QML_IMPORT_PATH)
+    list(APPEND overlay_test_environment
+      "QML2_IMPORT_PATH=${VOICE_INPUT_TEST_QML_IMPORT_PATH}")
+  endif()
+  if(VOICE_INPUT_TEST_QT_PLUGIN_PATH)
+    list(APPEND overlay_test_environment
+      "QT_PLUGIN_PATH=${VOICE_INPUT_TEST_QT_PLUGIN_PATH}")
+  endif()
+  add_test(NAME overlay-qml-smoke
+    COMMAND "${CMAKE_COMMAND}" -E env
+      ${overlay_test_environment}
+      "$<TARGET_FILE:voice-input-overlay>"
+      --demo --screenshot "${CMAKE_CURRENT_BINARY_DIR}/overlay-smoke.png")
+  set_tests_properties(overlay-qml-smoke PROPERTIES TIMEOUT 10)
   if(VOICE_INPUT_TEST_MODEL_DIR)
     add_executable(asr-test tests/asr_test.c src/asr.c)
     target_include_directories(asr-test PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")

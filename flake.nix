@@ -30,13 +30,34 @@
         inherit version;
         src = self;
 
-        nativeBuildInputs = with pkgs; [ cmake makeWrapper ninja pkg-config ];
-        buildInputs = with pkgs; [ fcitx5 pipewire sherpa-onnx ];
+        nativeBuildInputs = with pkgs; [
+          cmake
+          makeWrapper
+          ninja
+          pkg-config
+          qt6.wrapQtAppsHook
+        ];
+        buildInputs = with pkgs; [
+          fcitx5
+          fontconfig
+          kdePackages.layer-shell-qt
+          pipewire
+          sherpa-onnx
+          qt6.qtbase
+          qt6.qtdeclarative
+        ];
         doCheck = true;
-        cmakeFlags = [ "-DVOICE_INPUT_TEST_MODEL_DIR=${streamingModel}" ];
+        cmakeFlags = [
+          "-DVOICE_INPUT_TEST_MODEL_DIR=${streamingModel}"
+          "-DVOICE_INPUT_TEST_FONTCONFIG=${pkgs.fontconfig.out}/etc/fonts/fonts.conf"
+          "-DVOICE_INPUT_TEST_QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml"
+          "-DVOICE_INPUT_TEST_QT_PLUGIN_PATH=${pkgs.qt6.qtbase}/lib/qt-6/plugins"
+        ];
 
         postInstall = ''
           substituteInPlace "$out/lib/systemd/user/voice-inputd.service" \
+            --replace-fail '@out@' "$out"
+          substituteInPlace "$out/lib/systemd/user/voice-input-overlay.service" \
             --replace-fail '@out@' "$out"
           wrapProgram "$out/bin/voice-inputd" \
             --set-default VOICE_INPUT_MODEL_DIR ${streamingModel}
@@ -54,6 +75,9 @@
           pipewire
           fcitx5
           sherpa-onnx
+          qt6.qtbase
+          qt6.qtdeclarative
+          kdePackages.layer-shell-qt
         ];
       };
     };
