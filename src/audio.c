@@ -78,6 +78,7 @@ struct vi_audio {
     float target_rms;
     long preroll_ms;
     bool recording;
+    struct vi_audio_metrics metrics;
 };
 
 static float environment_float(const char *name, float fallback,
@@ -554,6 +555,8 @@ fail:
 void vi_audio_stop(struct vi_audio *audio) {
     if (audio == NULL) return;
     audio->recording = false;
+    /* A rapid restart must not replay the previous utterance through pre-roll. */
+    discard_captured_audio(audio);
     if (audio->preroll_ms > 0L) return;  /* keep capturing to preserve pre-roll */
     for (size_t i = 0; i < VI_MAX_SOURCES; ++i) stop_source(&audio->sources[i]);
     audio->active = false;
@@ -586,6 +589,7 @@ static void rewind_to_preroll(struct vi_audio *audio) {
 int vi_audio_start(struct vi_audio *audio) {
     if (audio == NULL) return -1;
     audio->recording = true;
+    memset(&audio->metrics, 0, sizeof(audio->metrics));
     audio->gain = 1.0F;
     if (audio->active) {
         /* Capture never stopped, so the ring already holds what was said just
@@ -618,6 +622,18 @@ int vi_audio_iterate(struct vi_audio *audio, int timeout_ms) {
 }
 
 size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity) {
+    return vi_audio_read_with_raw(audio, samples, NULL, capacity);
+}
+
+void vi_audio_take_metrics(struct vi_audio *audio, struct vi_audio_metrics *metrics) {
+    memset(metrics, 0, sizeof(*metrics));
+    if (!audio) return;
+    *metrics = audio->metrics;
+    memset(&audio->metrics, 0, sizeof(audio->metrics));
+}
+
+size_t vi_audio_read_with_raw(struct vi_audio *audio, float *samples,
+                              float *raw, size_t capacity) {
     if (audio == NULL || samples == NULL) return 0U;
     const uint64_t write_position = atomic_load_explicit(&audio->write_position,
                                                          memory_order_acquire);
@@ -634,6 +650,14 @@ size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity) {
     for (size_t i = 0; i < count; ++i) {
         samples[i] = audio->samples[(audio->read_position + i) % VI_RING_SAMPLES];
     }
+    for (size_t i = 0; i < count; ++i) {
+        if (raw) raw[i] = samples[i];
+        audio->metrics.squares += (double)samples[i] * samples[i];
+        const float magnitude = fabsf(samples[i]);
+        if (magnitude > audio->metrics.peak) audio->metrics.peak = magnitude;
+        if (magnitude >= 0.98F) ++audio->metrics.clipped;
+    }
+    audio->metrics.samples += count;
     audio->read_position += count;
     if (count > 0U) {
         audio->gain = vi_audio_apply_gain(samples, count, audio->gain,

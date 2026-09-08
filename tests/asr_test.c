@@ -8,12 +8,17 @@
 #include <string.h>
 
 static bool received_text = false;
+static char finals[8192];
 
 static void on_transcript(const char *event, const char *text, void *userdata) {
     (void)userdata;
     if (text != NULL && text[0] != '\0') {
         printf("%s: %s\n", event, text);
         received_text = true;
+        if (strcmp(event, "final") == 0) {
+            size_t used = strlen(finals);
+            snprintf(finals + used, sizeof(finals) - used, "%s|", text);
+        }
     }
 }
 
@@ -57,6 +62,31 @@ int main(int argc, char **argv) {
         }
     }
     vi_asr_finish(asr);
+    if (!quiet_test) {
+        char expected[sizeof(finals)];
+        memcpy(expected, finals, sizeof(expected));
+        const int sizes[] = {1, 341, 4096};
+        for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+            finals[0] = '\0';
+            for (int offset = 0; offset < wave->num_samples; offset += sizes[i]) {
+                int n = wave->num_samples - offset;
+                if (n > sizes[i]) n = sizes[i];
+                if (vi_asr_accept(asr, wave->samples + offset, (size_t)n) < 0) return EXIT_FAILURE;
+            }
+            vi_asr_finish(asr);
+            if (strcmp(expected, finals) != 0) {
+                fprintf(stderr, "transcript changed with caller block size %d\n", sizes[i]);
+                return EXIT_FAILURE;
+            }
+        }
+        /* Cancelling a partial input cannot leak it into the next utterance. */
+        vi_asr_accept(asr, wave->samples, 123);
+        vi_asr_reset(asr);
+        finals[0] = '\0';
+        vi_asr_accept(asr, wave->samples, (size_t)wave->num_samples);
+        vi_asr_finish(asr);
+        if (strcmp(expected, finals) != 0) return EXIT_FAILURE;
+    }
     vi_asr_destroy(asr);
     SherpaOnnxFreeWave(wave);
     return received_text ? EXIT_SUCCESS : EXIT_FAILURE;

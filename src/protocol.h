@@ -12,12 +12,15 @@ enum vi_command {
     VI_COMMAND_TOGGLE,
     VI_COMMAND_SOURCES,
     VI_COMMAND_QUIT,
+    VI_COMMAND_CANCEL,
 };
 
 /* What `voice-inputctl status` reports: enough to tell which model is loaded
    and whether punctuation came up, without reading the daemon's log. */
 struct vi_status {
     bool recording;
+    bool processing;
+    const char *final_mode;
     const char *audio;
     const char *asr;
     const char *asr_backend;

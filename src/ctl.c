@@ -12,13 +12,14 @@
 
 static void usage(FILE *stream) {
     fputs("Usage: voice-inputctl [--socket PATH] COMMAND\n"
-          "Commands: status, start, stop, toggle, sources, monitor, quit\n", stream);
+          "Commands: status, start, stop, toggle, cancel, sources, monitor, quit\n", stream);
 }
 
 /* The daemon speaks JSON so the overlay does not need a parser, but `status`
    is read by a person, so render that one event as plain lines. */
 static void print_status(const char *json) {
     static const struct { const char *key; const char *label; } fields[] = {
+        { "final-mode", "final-mode" },
         { "audio", "audio" },           { "asr", "asr" },
         { "asr-backend", "asr-backend" },
         { "asr-model", "asr-model" },   { "asr-kind", "asr-kind" },
@@ -33,6 +34,8 @@ static void print_status(const char *json) {
         printf("%-18s %s\n", "state:", strcmp(value, "true") == 0 ? "recording"
                                                                  : "idle");
     }
+    if (vi_json_field(json, "processing", value, sizeof(value)) > 0 && strcmp(value, "true") == 0)
+        printf("%-18s %s\n", "processing:", "refining");
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
         if (vi_json_field(json, fields[i].key, value, sizeof(value)) <= 0) continue;
         char label[32];

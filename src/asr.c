@@ -19,6 +19,8 @@ struct vi_asr {
     char decoder[32];
     const char *kind;
     int threads;
+    float pending[320];
+    size_t pending_count;
 };
 
 /* A model directory is whatever upstream shipped: file names carry epoch and
@@ -199,11 +201,11 @@ static void emit_result(struct vi_asr *asr, bool endpoint) {
     SherpaOnnxDestroyOnlineRecognizerResult(result);
 }
 
-static void decode_ready(struct vi_asr *asr) {
+static void decode_ready(struct vi_asr *asr, bool finishing) {
     while (SherpaOnnxIsOnlineStreamReady(asr->recognizer, asr->stream)) {
         SherpaOnnxDecodeOnlineStream(asr->recognizer, asr->stream);
     }
-    const bool endpoint =
+    const bool endpoint = !finishing &&
         SherpaOnnxOnlineStreamIsEndpoint(asr->recognizer, asr->stream) != 0;
     emit_result(asr, endpoint);
     if (endpoint) {
@@ -213,27 +215,47 @@ static void decode_ready(struct vi_asr *asr) {
 }
 
 int vi_asr_accept(struct vi_asr *asr, const float *samples, size_t count) {
-    if (asr == NULL || samples == NULL || count == 0) return -1;
+    if (asr == NULL || asr->stream == NULL || samples == NULL || count == 0) return -1;
+    /* Use a fixed 20 ms input quantum regardless of PipeWire negotiation or
+       offline replay block size. Endpoint decisions must not depend on the
+       caller's buffer boundaries. */
     while (count > 0) {
-        int32_t chunk = count > (size_t)INT32_MAX ? INT32_MAX : (int32_t)count;
-        SherpaOnnxOnlineStreamAcceptWaveform(asr->stream, 16000, samples, chunk);
+        size_t chunk = 320U - asr->pending_count;
+        if (chunk > count) chunk = count;
+        memcpy(asr->pending + asr->pending_count, samples, chunk * sizeof(float));
+        asr->pending_count += chunk;
         samples += chunk;
-        count -= (size_t)chunk;
+        count -= chunk;
+        if (asr->pending_count == 320U) {
+            SherpaOnnxOnlineStreamAcceptWaveform(asr->stream, 16000, asr->pending, 320);
+            asr->pending_count = 0;
+            decode_ready(asr, false);
+        }
     }
-    decode_ready(asr);
     return 0;
 }
 
 void vi_asr_finish(struct vi_asr *asr) {
-    if (asr == NULL) return;
+    if (asr == NULL || asr->stream == NULL) return;
+    if (asr->pending_count > 0) {
+        SherpaOnnxOnlineStreamAcceptWaveform(asr->stream, 16000, asr->pending,
+                                            (int32_t)asr->pending_count);
+        asr->pending_count = 0;
+    }
     float padding[4800] = {0};
     SherpaOnnxOnlineStreamAcceptWaveform(asr->stream, 16000, padding, 4800);
     SherpaOnnxOnlineStreamInputFinished(asr->stream);
-    decode_ready(asr);
+    decode_ready(asr, true);
     emit_result(asr, true);
-    SherpaOnnxDestroyOnlineStream(asr->stream);
+    vi_asr_reset(asr);
+}
+
+void vi_asr_reset(struct vi_asr *asr) {
+    if (!asr) return;
+    if (asr->stream) SherpaOnnxDestroyOnlineStream(asr->stream);
     asr->stream = SherpaOnnxCreateOnlineStream(asr->recognizer);
     asr->previous[0] = '\0';
+    asr->pending_count = 0;
 }
 
 const char *vi_asr_state(const struct vi_asr *asr) {

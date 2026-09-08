@@ -40,6 +40,7 @@ struct vi_asr *vi_asr_create(const struct vi_asr_config *config,
 void vi_asr_destroy(struct vi_asr *asr);
 int vi_asr_accept(struct vi_asr *asr, const float *samples, size_t count);
 void vi_asr_finish(struct vi_asr *asr);
+void vi_asr_reset(struct vi_asr *asr);
 const char *vi_asr_state(const struct vi_asr *asr);
 
 /* For the status reply and the benchmark report. */

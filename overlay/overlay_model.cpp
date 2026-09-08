@@ -85,17 +85,24 @@ void OverlayModel::processLine(const QByteArray &line) {
     if (event == QStringLiteral("state")) {
         const bool nextRecording = object.value(QStringLiteral("recording")).toBool();
         const bool wasRecording = recording_;
+        const bool wasProcessing = processing_;
+        processing_ = false;
         recording_ = nextRecording;
-        if (nextRecording) {
+        if (nextRecording && !wasRecording) {
             error_ = false;
             sawFinal_ = false;
+            hint_.clear();
+            weakFrames_ = clippingHold_ = 0;
             text_.clear();
             level_ = 0.0;
             status_ = QStringLiteral("正在听…");
             panelVisible_ = true;
             hideTimer_.stop();
-        } else if (wasRecording || sawFinal_ || error_) {
+        } else if (nextRecording && status_ == QStringLiteral("正在收尾…")) {
+            status_ = QStringLiteral("正在听…");
+        } else if (!nextRecording && (wasRecording || wasProcessing)) {
             level_ = 0.0;
+            hint_.clear();
             if (!error_) {
                 status_ = sawFinal_ ? QStringLiteral("已输入")
                                     : QStringLiteral("未识别到语音");
@@ -108,6 +115,15 @@ void OverlayModel::processLine(const QByteArray &line) {
 
     if (event == QStringLiteral("level")) {
         level_ = qBound(0.0, object.value(QStringLiteral("rms")).toDouble(), 1.0);
+        if (recording_ && object.contains(QStringLiteral("raw_rms"))) {
+            const double raw = object.value(QStringLiteral("raw_rms")).toDouble();
+            const double clipping = object.value(QStringLiteral("clipping")).toDouble();
+            if (clipping >= 0.001) clippingHold_ = 20;
+            else if (clippingHold_ > 0) --clippingHold_;
+            weakFrames_ = raw < 0.006 ? weakFrames_ + 1 : 0;
+            hint_ = clippingHold_ > 0 ? QStringLiteral("声音过响，请远离麦克风或降低输入音量")
+                : weakFrames_ >= 20 ? QStringLiteral("声音偏小或尚未说话，请检查麦克风") : QString();
+        }
         emit changed();
         return;
     }
@@ -131,6 +147,44 @@ void OverlayModel::processLine(const QByteArray &line) {
         sawFinal_ = !text_.isEmpty();
         status_ = QStringLiteral("正在写入…");
         panelVisible_ = true;
+        emit changed();
+        return;
+    }
+
+    if (event == QStringLiteral("processing")) {
+        processing_ = true;
+        recording_ = false;
+        level_ = 0;
+        status_ = QStringLiteral("正在校对…");
+        hint_ = QStringLiteral("再次按快捷键可取消");
+        panelVisible_ = true;
+        hideTimer_.stop();
+        emit changed();
+        return;
+    }
+
+    if (event == QStringLiteral("cancelled")) {
+        processing_ = false;
+        recording_ = false;
+        error_ = false;
+        sawFinal_ = false;
+        level_ = 0;
+        text_.clear();
+        hint_.clear();
+        status_ = QStringLiteral("已取消");
+        showFor(1200);
+        emit changed();
+        return;
+    }
+
+    if (event == QStringLiteral("output-success")) {
+        status_ = recording_ ? QStringLiteral("已输入，继续听…") : QStringLiteral("已输入");
+        emit changed();
+        return;
+    }
+
+    if (event == QStringLiteral("finishing")) {
+        status_ = QStringLiteral("正在收尾…");
         emit changed();
         return;
     }

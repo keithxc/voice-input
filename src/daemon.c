@@ -5,6 +5,7 @@
 #include "protocol.h"
 #include "output.h"
 #include "punctuation.h"
+#include "refine.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -30,6 +31,11 @@ struct app {
     struct vi_audio *audio;
     struct vi_asr *asr;
     struct vi_punctuation *punctuation;
+    struct vi_refiner *refiner;
+    bool refining;
+    float *session_audio;
+    size_t session_samples;
+    char draft[VI_REFINE_TEXT_SIZE];
     bool punctuation_wanted;
     bool no_audio;
     bool recording;
@@ -230,6 +236,8 @@ static void broadcast_state(struct app *app, const char *event) {
    recogniser finalise. */
 static long tail_ms = 250L;
 
+static void commit_transcript(struct app *app, const char *text, bool punctuate);
+
 static void finish_recording(struct app *app) {
     if (!app->no_audio) {
         vi_audio_stop(app->audio);
@@ -239,6 +247,15 @@ static void finish_recording(struct app *app) {
     app->tail_until_ms = 0L;
     debug_wav_close(app);
     timing_log("recording finished");
+    if (app->refiner && app->session_samples > 0 && app->draft[0]) {
+        if (vi_refiner_submit(app->refiner, app->session_audio, app->session_samples, app->draft) == 0) {
+            app->refining = true;
+            broadcast(app, "{\"event\":\"processing\"}\n");
+            return;
+        }
+        /* A busy/cancelled worker or allocation failure must not lose speech. */
+        commit_transcript(app, app->draft, true);
+    }
     broadcast_state(app, "state");
 }
 
@@ -247,7 +264,27 @@ static void maybe_finish_recording(struct app *app) {
     finish_recording(app);
 }
 
+static void cancel_recording(struct app *app) {
+    vi_refiner_cancel(app->refiner);
+    app->refining = false;
+    if (app->recording) {
+        vi_audio_stop(app->audio);
+        vi_asr_reset(app->asr);
+    }
+    app->recording = false;
+    app->tail_until_ms = 0;
+    app->session_samples = 0;
+    app->draft[0] = '\0';
+    debug_wav_close(app);
+    broadcast(app, "{\"event\":\"cancelled\"}\n");
+    broadcast_state(app, "state");
+}
+
 static int set_recording(struct app *app, bool recording) {
+    if (app->refining) {
+        broadcast(app, "{\"event\":\"processing\"}\n");
+        return 0;
+    }
     if (recording && app->tail_until_ms != 0L) {
         app->tail_until_ms = 0L;  /* speaking again during the tail: carry on */
         broadcast_state(app, "state");
@@ -258,6 +295,8 @@ static int set_recording(struct app *app, bool recording) {
         return 0;
     }
     if (recording) {
+        app->session_samples = 0;
+        app->draft[0] = '\0';
         timing_origin_ms = monotonic_ms();
         app->first_audio_logged = false;
         app->accepted_samples = 0U;
@@ -283,7 +322,9 @@ static int set_recording(struct app *app, bool recording) {
     if (tail_ms > 0L && !app->no_audio) {
         /* Stay in the recording state until the tail is in, so the panel does
            not announce a result the recogniser has not produced yet. */
+        if (app->tail_until_ms != 0L) return 0;
         app->tail_until_ms = monotonic_ms() + tail_ms;
+        broadcast(app, "{\"event\":\"finishing\"}\n");
         timing_log("stop accepted; capturing a %ld ms tail", tail_ms);
         return 0;
     }
@@ -295,9 +336,10 @@ static void handle_command(struct app *app, size_t index, const char *line) {
     enum vi_command command = vi_parse_command(line);
     switch (command) {
     case VI_COMMAND_STATUS: {
-        broadcast_state(app, "state");
         struct vi_status status = {
             .recording = app->recording,
+            .processing = app->refining,
+            .final_mode = app->refiner ? "accurate" : "streaming",
             .audio = current_audio_state(app),
             .asr = vi_asr_state(app->asr),
             .asr_backend = app->asr != NULL ? "sherpa-cpu" : "none",
@@ -325,8 +367,12 @@ static void handle_command(struct app *app, size_t index, const char *line) {
     case VI_COMMAND_STOP:
         (void)set_recording(app, false);
         break;
+    case VI_COMMAND_CANCEL:
+        cancel_recording(app);
+        break;
     case VI_COMMAND_TOGGLE:
-        (void)set_recording(app, !app->recording);
+        if (app->refining) { cancel_recording(app); break; }
+        (void)set_recording(app, !app->recording || app->tail_until_ms != 0L);
         break;
     case VI_COMMAND_SOURCES: {
         static char message[16384];
@@ -371,6 +417,7 @@ static void accept_clients(struct app *app) {
         vi_json_state(hello, sizeof(hello), "hello", app->recording,
                       current_audio_state(app), vi_asr_state(app->asr));
         send_to_client(app, slot, hello);
+        if (app->refining) send_to_client(app, slot, "{\"event\":\"processing\"}\n");
     }
 }
 
@@ -405,6 +452,21 @@ static void on_level(float rms, void *userdata) {
 static void on_transcript(const char *event, const char *text, void *userdata) {
     struct app *app = userdata;
     timing_log("%s: %s", event, text);
+    if (app->refiner) {
+        char preview[VI_REFINE_TEXT_SIZE];
+        const size_t used = strlen(app->draft);
+        if (strcmp(event, "final") == 0) {
+            (void)snprintf(app->draft + used, sizeof(app->draft) - used,
+                           "%s%s", used ? " " : "", text);
+            snprintf(preview, sizeof(preview), "%s", app->draft);
+        } else {
+            snprintf(preview, sizeof(preview), "%s", app->draft);
+            (void)snprintf(preview + used, sizeof(preview) - used, "%s%s", used ? " " : "", text);
+        }
+        char message[VI_REFINE_TEXT_SIZE * 2];
+        if (vi_json_text(message, sizeof(message), "partial", preview) >= 0) broadcast(app, message);
+        return;
+    }
     if (strcmp(event, "final") != 0) {
         char partial[8192];
         if (vi_json_text(partial, sizeof(partial), event, text) >= 0) {
@@ -413,9 +475,13 @@ static void on_transcript(const char *event, const char *text, void *userdata) {
         return;
     }
 
-    static char final_text[8192];
+    commit_transcript(app, text, true);
+}
+
+static void commit_transcript(struct app *app, const char *text, bool punctuate) {
+    static char final_text[VI_REFINE_TEXT_SIZE];
     (void)snprintf(final_text, sizeof(final_text), "%s", text);
-    if (app->punctuation != NULL) {
+    if (punctuate && app->punctuation != NULL) {
         const long before = monotonic_ms();
         if (vi_punctuation_apply(app->punctuation, text, final_text,
                                  sizeof(final_text)) < 0) {
@@ -425,8 +491,8 @@ static void on_transcript(const char *event, const char *text, void *userdata) {
                        final_text);
         }
     }
-    char message[8192];
-    if (vi_json_text(message, sizeof(message), event, final_text) >= 0) {
+    char message[VI_REFINE_TEXT_SIZE * 2];
+    if (vi_json_text(message, sizeof(message), "final", final_text) >= 0) {
         broadcast(app, message);
     }
     const long before = monotonic_ms();
@@ -435,14 +501,32 @@ static void on_transcript(const char *event, const char *text, void *userdata) {
                committed < 0 ? "failed" : "done", monotonic_ms() - before);
     if (committed < 0) {
         broadcast(app, "{\"event\":\"output-error\",\"backend\":\"fcitx5\"}\n");
+    } else {
+        broadcast(app, "{\"event\":\"output-success\",\"backend\":\"fcitx5\"}\n");
     }
+}
+
+static void poll_refinement(struct app *app) {
+    struct vi_refine_result result;
+    if (!vi_refiner_poll(app->refiner, &result)) return;
+    if (result.cancelled || !app->refining) return;
+    timing_log("final refinement: %s, %ld ms", result.backend, result.elapsed_ms);
+    app->refining = false;
+    if (result.text[0]) commit_transcript(app, result.text, result.fallback || strcmp(result.backend, "sensevoice") != 0);
+    broadcast_state(app, "state");
 }
 
 static void process_audio(struct app *app) {
     if (!app->recording || app->asr == NULL) return;
-    float samples[4096];
+    float samples[4096], raw[4096];
     size_t count;
-    while ((count = vi_audio_read(app->audio, samples, 4096)) > 0) {
+    while ((count = vi_audio_read_with_raw(app->audio, samples, raw, 4096)) > 0) {
+        if (app->refiner) {
+            if (count > VI_REFINE_MAX_SAMPLES - app->session_samples)
+                count = VI_REFINE_MAX_SAMPLES - app->session_samples;
+            memcpy(app->session_audio + app->session_samples, raw, count * sizeof(float));
+            app->session_samples += count;
+        }
         if (!app->first_audio_logged) {
             app->first_audio_logged = true;
             timing_log("first audio reached ASR (%zu samples)", count);
@@ -462,6 +546,10 @@ static void process_audio(struct app *app) {
         const long spent = monotonic_ms() - before;
         if (spent >= 20L) {
             timing_log("ASR decode of %zu samples took %ld ms", count, spent);
+        }
+        if (app->refiner && app->session_samples == VI_REFINE_MAX_SAMPLES) {
+            finish_recording(app);
+            break;
         }
     }
 }
@@ -499,9 +587,13 @@ static void maybe_broadcast_level(struct app *app) {
     long elapsed_ms = (now.tv_sec - app->last_level_sent.tv_sec) * 1000L +
                       (now.tv_nsec - app->last_level_sent.tv_nsec) / 1000000L;
     if (elapsed_ms < 80L) return;
-    char message[128];
-    snprintf(message, sizeof(message), "{\"event\":\"level\",\"rms\":%.4f}\n",
-             (double)app->pending_level);
+    struct vi_audio_metrics metrics;
+    vi_audio_take_metrics(app->audio, &metrics);
+    const double raw_rms = metrics.samples ? sqrt(metrics.squares / (double)metrics.samples) : 0;
+    const double clipping = metrics.samples ? (double)metrics.clipped / (double)metrics.samples : 0;
+    char message[256];
+    snprintf(message, sizeof(message), "{\"event\":\"level\",\"rms\":%.4f,\"raw_rms\":%.5f,\"raw_peak\":%.4f,\"clipping\":%.5f}\n",
+             (double)app->pending_level, raw_rms, (double)metrics.peak, clipping);
     broadcast(app, message);
     app->pending_level = -1.0F;
     app->last_level_sent = now;
@@ -672,9 +764,22 @@ int main(int argc, char **argv) {
             }
         }
     }
+    if (!no_audio && app.asr && strcmp(environment_text("VOICE_INPUT_FINAL_MODE", "accurate"), "streaming") != 0) {
+        app.refiner = vi_refiner_create(getenv("VOICE_INPUT_PARAFORMER_DIR"),
+                                        getenv("VOICE_INPUT_SENSEVOICE_DIR"),
+                                        (int)environment_long("VOICE_INPUT_FINAL_THREADS", 2, 1, 16));
+        if (app.refiner) {
+            app.session_audio = malloc(VI_REFINE_MAX_SAMPLES * sizeof(float));
+            if (!app.session_audio) { vi_refiner_destroy(app.refiner); app.refiner = NULL; }
+        }
+        fprintf(stderr, "voice-inputd: final mode: %s\n", app.refiner ? "accurate" : "streaming (offline models unavailable)");
+    }
     app.server_fd = create_server(socket_path);
     if (app.server_fd < 0) {
         perror("voice-inputd: create socket");
+        vi_refiner_destroy(app.refiner);
+        free(app.session_audio);
+        vi_punctuation_destroy(app.punctuation);
         vi_audio_destroy(app.audio);
         vi_asr_destroy(app.asr);
         return EXIT_FAILURE;
@@ -691,6 +796,7 @@ int main(int argc, char **argv) {
             const struct timespec delay = { .tv_sec = 0, .tv_nsec = 10000000L };
             nanosleep(&delay, NULL);
         }
+        poll_refinement(&app);
         process_audio(&app);
         maybe_finish_recording(&app);
         maybe_log_throughput(&app);
@@ -698,7 +804,7 @@ int main(int argc, char **argv) {
         maybe_broadcast_level(&app);
     }
 
-    set_recording(&app, false);
+    cancel_recording(&app);
     for (size_t i = 0; i < MAX_CLIENTS; ++i) {
         if (app.clients[i] >= 0) close(app.clients[i]);
     }
@@ -707,5 +813,7 @@ int main(int argc, char **argv) {
     vi_audio_destroy(app.audio);
     vi_asr_destroy(app.asr);
     vi_punctuation_destroy(app.punctuation);
+    vi_refiner_destroy(app.refiner);
+    free(app.session_audio);
     return EXIT_SUCCESS;
 }

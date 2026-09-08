@@ -9,6 +9,8 @@ int main(void) {
     assert(vi_parse_command("  toggle \r\n") == VI_COMMAND_TOGGLE);
     assert(vi_parse_command("unknown") == VI_COMMAND_INVALID);
     assert(strcmp(vi_command_name(VI_COMMAND_STOP), "stop") == 0);
+    assert(vi_parse_command("cancel\n") == VI_COMMAND_CANCEL);
+    assert(strcmp(vi_command_name(VI_COMMAND_CANCEL), "cancel") == 0);
     char json[128];
     assert(vi_json_state(json, sizeof(json), "state", true, "streaming", "ready") > 0);
     assert(strstr(json, "\"recording\":true") != NULL);
@@ -23,6 +25,7 @@ int main(void) {
     assert(vi_json_escape(escaped, 4, "abcdefgh") < 0);
 
     const struct vi_status status = {
+        .processing = true, .final_mode = "accurate",
         .recording = false, .audio = "ready", .asr = "ready",
         .asr_backend = "sherpa-cpu", .asr_model = "zipformer-zh-en",
         .asr_kind = "transducer", .decoder = "greedy_search", .threads = 2,
@@ -33,6 +36,10 @@ int main(void) {
     char info[1024];
     assert(vi_json_info(info, sizeof(info), &status) > 0);
     char value[128];
+    assert(vi_json_field(info, "processing", value, sizeof(value)) > 0);
+    assert(strcmp(value, "true") == 0);
+    assert(vi_json_field(info, "final-mode", value, sizeof(value)) > 0);
+    assert(strcmp(value, "accurate") == 0);
     assert(vi_json_field(info, "asr-model", value, sizeof(value)) > 0);
     assert(strcmp(value, "zipformer-zh-en") == 0);
     assert(vi_json_field(info, "threads", value, sizeof(value)) > 0);

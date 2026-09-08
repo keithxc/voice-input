@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 static int output_socket_path(char *buffer, size_t size) {
@@ -49,6 +50,14 @@ int vi_output_commit(const char *text) {
     if (output_socket_path(path, sizeof(path)) < 0) return -1;
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
+    /* Bound a stalled addon, including a full connection backlog. Allow its
+       normal focus retries (420 ms plus event-loop dispatch) to complete. */
+    const struct timeval timeout = { .tv_sec = 1, .tv_usec = 0 };
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        close(fd);
+        return -1;
+    }
     struct sockaddr_un address = { .sun_family = AF_UNIX };
     strcpy(address.sun_path, path);
     if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) {

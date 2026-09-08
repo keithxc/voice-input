@@ -5,6 +5,12 @@
 #include <stddef.h>
 
 struct vi_audio;
+struct vi_audio_metrics {
+    size_t samples;
+    size_t clipped;
+    double squares;
+    float peak;
+};
 
 typedef void (*vi_level_callback)(float rms, void *userdata);
 
@@ -14,6 +20,9 @@ int vi_audio_start(struct vi_audio *audio);
 void vi_audio_stop(struct vi_audio *audio);
 int vi_audio_iterate(struct vi_audio *audio, int timeout_ms);
 size_t vi_audio_read(struct vi_audio *audio, float *samples, size_t capacity);
+size_t vi_audio_read_with_raw(struct vi_audio *audio, float *samples,
+                              float *raw, size_t capacity);
+void vi_audio_take_metrics(struct vi_audio *audio, struct vi_audio_metrics *metrics);
 float vi_audio_apply_gain(float *samples, size_t count, float current_gain,
                           float max_gain, float target_rms);
 float vi_audio_quality_score(float rms, float noise_floor, float clipping_ratio);

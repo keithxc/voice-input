@@ -8,7 +8,7 @@ domain socket protocol, sherpa-onnx streaming recognition, and a thin Qt/QML
 overlay. Fcitx5 is the preferred text commit path; libei and clipboard paste are
 fallbacks.
 
-## Status: v0.1 usable desktop input path
+## Status: local Chinese/English dictation with final refinement
 
 The first usable milestone includes:
 
@@ -18,7 +18,7 @@ The first usable milestone includes:
   hot-plugged devices;
 - bounded adaptive input gain for quiet speech, with peak limiting;
 - a local Unix socket command/event protocol;
-- start, stop, toggle, status, monitor, and clean shutdown commands;
+- start, stop, toggle, cancel, status, monitor, and clean shutdown commands;
 - throttled real-time RMS level events;
 - sherpa-onnx streaming Zipformer recognition for Chinese and English;
 - partial/final transcript events and endpoint detection;
@@ -68,10 +68,43 @@ It is off by default because it holds the microphone open for as long as the
 daemon runs, which desktop environments show as continuous recording. Accepted
 range is `0..3000` ms; audio older than the ring's 4 seconds cannot be recovered.
 
+Pre-roll never crosses the end of the previous recording, so quickly starting
+again cannot replay the previous sentence.
+
 Speech also trails off at the end, so capture continues for a short tail after
 the stop command before the recogniser finalises. `VOICE_INPUT_TAIL_MS` sets it,
 defaulting to `250`; `0` finalises immediately, at the cost of the last syllable
 of a sentence that fades out. Accepted range is `0..2000` ms.
+
+The overlay shows “正在收尾…” during the tail, then “正在校对…” while the
+final worker runs. Accurate mode commits once after stopping. Status queries preserve the current
+transcript. A stalled output connection times out instead of hanging forever.
+
+## Accuracy mode
+
+The packaged default is `VOICE_INPUT_FINAL_MODE=accurate`: streaming Zipformer
+shows a draft while you speak; after stop and the capture tail, a background
+worker recognises the complete raw utterance. SenseVoice INT8 handles Chinese
+or English; Paraformer INT8 handles drafts containing both. If mixed refinement
+loses a substantial English word from the draft, the draft is retained. Routing
+uses the draft, not a supplied language label, and can still make mistakes.
+
+Pauses update the draft without typing unfinished fragments. Press the shortcut
+again during “正在校对…” or run `voice-inputctl cancel` to discard the result.
+Cancellation during recording also discards the current utterance. The panel
+warns about raw input clipping or prolonged weak input before software gain.
+
+Sessions automatically finish at 60 seconds to bound memory and inference.
+The two additional pinned models total about 445 MiB on disk; measured benchmark
+peak memory is about 1.1 GB. English final refinement on the regression clips
+adds roughly 0.8–1.3 seconds, plus the capture tail. These are CPU measurements,
+not guaranteed latency bounds.
+
+Use `VOICE_INPUT_FINAL_MODE=streaming` for the previous endpoint-commit behavior.
+If either final model cannot load, the daemon falls back to streaming and
+reports that in `voice-inputctl status`. Custom model directories are configured
+with `VOICE_INPUT_SENSEVOICE_DIR` and `VOICE_INPUT_PARAFORMER_DIR`; both need
+`model.int8.onnx` and `tokens.txt`. `VOICE_INPUT_FINAL_THREADS` defaults to 2.
 
 ## Choosing the microphone
 
@@ -191,8 +224,9 @@ guessed at.
 
 ## Punctuation
 
-Final text is punctuated before it is committed. The recogniser produces bare
-words; a local ct-transformer model turns them into a sentence:
+Bare final text is punctuated before it is committed. SenseVoice already
+provides punctuation and bypasses this step. For streaming and Paraformer
+output, a local ct-transformer model turns words into a sentence:
 
 ```text
 帮我看一下这个buffer应该怎么处理然后把return value检查一下
@@ -268,7 +302,7 @@ skipped, so the corpus can be finished over several sittings. Recordings stay
 outside the repository. Then measure:
 
 ```sh
-./result/bin/voice-input-asr-bench ~/voice-input-corpus/manifest.tsv
+./result/bin/voice-input-asr-bench --accurate ~/voice-input-corpus/manifest.tsv
 ```
 
 The report gives, per clip, per tag and in total: a character error rate for

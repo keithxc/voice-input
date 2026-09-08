@@ -9,6 +9,8 @@ class OverlayModel final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool panelVisible READ panelVisible NOTIFY changed)
     Q_PROPERTY(bool recording READ recording NOTIFY changed)
+    Q_PROPERTY(bool processing READ processing NOTIFY changed)
+    Q_PROPERTY(QString hint READ hint NOTIFY changed)
     Q_PROPERTY(bool error READ error NOTIFY changed)
     Q_PROPERTY(double level READ level NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
@@ -21,6 +23,8 @@ public:
 
     bool panelVisible() const { return panelVisible_; }
     bool recording() const { return recording_; }
+    bool processing() const { return processing_; }
+    QString hint() const { return hint_; }
     bool error() const { return error_; }
     double level() const { return level_; }
     QString status() const { return status_; }
@@ -46,6 +50,10 @@ private:
     bool panelVisible_ = false;
     bool recording_ = false;
     bool error_ = false;
+    bool processing_ = false;
+    int weakFrames_ = 0;
+    int clippingHold_ = 0;
+    QString hint_;
     bool sawFinal_ = false;
     double level_ = 0.0;
     QString status_ = QStringLiteral("待机");

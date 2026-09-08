@@ -23,6 +23,7 @@ enum vi_command vi_parse_command(const char *line) {
     if (strcmp(word, "stop") == 0) return VI_COMMAND_STOP;
     if (strcmp(word, "toggle") == 0) return VI_COMMAND_TOGGLE;
     if (strcmp(word, "sources") == 0) return VI_COMMAND_SOURCES;
+    if (strcmp(word, "cancel") == 0) return VI_COMMAND_CANCEL;
     if (strcmp(word, "quit") == 0) return VI_COMMAND_QUIT;
     return VI_COMMAND_INVALID;
 }
@@ -35,6 +36,7 @@ const char *vi_command_name(enum vi_command command) {
     case VI_COMMAND_TOGGLE: return "toggle";
     case VI_COMMAND_SOURCES: return "sources";
     case VI_COMMAND_QUIT: return "quit";
+    case VI_COMMAND_CANCEL: return "cancel";
     default: return "invalid";
     }
 }
@@ -75,13 +77,14 @@ int vi_json_info(char *buffer, size_t size, const struct vi_status *status) {
                     "\"asr-kind\":\"%s\",\"decoder\":\"%s\",\"threads\":%d,"
                     "\"source-mode\":\"%s\",\"source\":\"%s\","
                     "\"punctuation\":\"%s\",\"punctuation-model\":\"%s\","
-                    "\"sample-rate\":%d,\"tail-ms\":%ld}\n",
+                    "\"sample-rate\":%d,\"tail-ms\":%ld,\"processing\":%s,\"final-mode\":\"%s\"}\n",
                     status->recording ? "true" : "false", status->audio,
                     status->asr, status->asr_backend, status->asr_model,
                     status->asr_kind, status->decoder, status->threads,
                     status->source_mode, status->source,
                     status->punctuation, status->punctuation_model,
-                    status->sample_rate, status->tail_ms);
+                    status->sample_rate, status->tail_ms, status->processing ? "true" : "false",
+                    status->final_mode ? status->final_mode : "streaming");
 }
 
 int vi_json_field(const char *json, const char *key, char *value, size_t size) {

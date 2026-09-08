@@ -40,12 +40,46 @@
           "$model/tokens.txt" \
           "$model/test_wavs/2.wav"
       '';
+      paraformerModel = let
+        model = pkgs.fetchurl {
+          name = "voice-input-paraformer-int8-model.int8.onnx";
+          url = "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09/resolve/906992d326ebf0c5171cde675aa0902be9e5bc6c/model.int8.onnx";
+          hash = "sha256-kLwDA0rhvvlXX4zHmM0VGci+iqnotFigM+MgF/9NWEw=";
+        };
+        tokens = pkgs.fetchurl {
+          name = "voice-input-paraformer-int8-tokens.txt";
+          url = "https://huggingface.co/csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09/resolve/906992d326ebf0c5171cde675aa0902be9e5bc6c/tokens.txt";
+          hash = "sha256-bA47Nc7OJZgp5stbjZDRPbiPYeo6KVPRGJjksr/XouI=";
+        };
+      in pkgs.runCommand "voice-input-paraformer-int8" {} ''
+        mkdir -p "$out"
+        ln -s ${model} "$out/model.int8.onnx"
+        ln -s ${tokens} "$out/tokens.txt"
+      '';
+      sensevoiceModel = let
+        model = pkgs.fetchurl {
+          name = "voice-input-sensevoice-int8-model.int8.onnx";
+          url = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/model.int8.onnx";
+          hash = "sha256-xx8M4AvslbB3ROEWNF4z2Mu+CM74ljgs+Qe/S1GizVE=";
+        };
+        tokens = pkgs.fetchurl {
+          name = "voice-input-sensevoice-int8-tokens.txt";
+          url = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/tokens.txt";
+          hash = "sha256-9EnrKNxWdTPX+lm+NOKryoeE93GFDHikf7cxoxQpodw=";
+        };
+      in pkgs.runCommand "voice-input-sensevoice-int8" {} ''
+        mkdir -p "$out"
+        ln -s ${model} "$out/model.int8.onnx"
+        ln -s ${tokens} "$out/tokens.txt"
+      '';
     in {
       packages.${system} = {
         # The models are exposed so a development build can be pointed at the
         # same pinned store paths the wrapper uses, without a second download.
         asr-model = streamingModel;
         punctuation-model = punctuationModel;
+        paraformer-model = paraformerModel;
+        sensevoice-model = sensevoiceModel;
         default = pkgs.stdenv.mkDerivation {
           pname = "voice-input";
           inherit version;
@@ -70,6 +104,8 @@
           doCheck = true;
           cmakeFlags = [
             "-DVOICE_INPUT_TEST_MODEL_DIR=${streamingModel}"
+            "-DVOICE_INPUT_TEST_PARAFORMER_DIR=${paraformerModel}"
+            "-DVOICE_INPUT_TEST_SENSEVOICE_DIR=${sensevoiceModel}"
             "-DVOICE_INPUT_TEST_FONTCONFIG=${pkgs.fontconfig.out}/etc/fonts/fonts.conf"
             "-DVOICE_INPUT_TEST_QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml"
             "-DVOICE_INPUT_TEST_QT_PLUGIN_PATH=${pkgs.qt6.qtbase}/lib/qt-6/plugins"
@@ -83,7 +119,9 @@
             for program in voice-inputd voice-input-asr-bench; do
               wrapProgram "$out/bin/$program" \
                 --set-default VOICE_INPUT_MODEL_DIR ${streamingModel} \
-                --set-default VOICE_INPUT_PUNCT_MODEL_DIR ${punctuationModel}
+                --set-default VOICE_INPUT_PUNCT_MODEL_DIR ${punctuationModel} \
+                --set-default VOICE_INPUT_PARAFORMER_DIR ${paraformerModel} \
+                --set-default VOICE_INPUT_SENSEVOICE_DIR ${sensevoiceModel}
             done
             '';
         };

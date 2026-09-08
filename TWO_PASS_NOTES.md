@@ -1,4 +1,9 @@
-# Two-pass rescoring: measured, not adopted
+# Historical two-pass evaluation
+
+> Superseded on 2026-09-08: accurate mode now uses background whole-utterance
+> refinement after referenced acoustic tests showed substantial English gains.
+> See README.md, CURRENT_ARCHITECTURE.md and BENCHMARK.md. Measurements below
+> document the earlier latency-first decision, not current behavior.
 
 The idea is standard: show a small streaming model's partials while the speaker
 talks, then rerun the finished utterance through an accurate offline model

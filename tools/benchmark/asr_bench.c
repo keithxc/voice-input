@@ -15,6 +15,7 @@
 #include "audio.h"
 #include "punctuation.h"
 #include "score.h"
+#include "refine.h"
 
 #include <sherpa-onnx/c-api/c-api.h>
 #include <stdbool.h>
@@ -220,6 +221,7 @@ static int split_manifest_line(char *line, char **path, char **tags,
 
 struct run {
     struct vi_asr *asr;
+    struct vi_refiner *refiner;
     struct vi_punctuation *punctuation;
     struct collector *collector;
     bool realtime;
@@ -250,7 +252,7 @@ static int score_clip(const struct run *run, const char *wav_path,
     memset(collector, 0, sizeof(*collector));
     clock_gettime(CLOCK_MONOTONIC, &collector->started);
 
-    const int32_t chunk = 1600;  /* 100 ms, the daemon's own feed size */
+    const int32_t chunk = 1600;  /* 100 ms caller blocks; ASR internally uses fixed 20 ms frames. */
     float adjusted[1600];
     float gain = 1.0F;
     double decode_ms = 0.0;
@@ -279,7 +281,27 @@ static int score_clip(const struct run *run, const char *wav_path,
     }
     struct timespec speech_end;
     clock_gettime(CLOCK_MONOTONIC, &speech_end);
+    bool needs_punctuation = true;
     vi_asr_finish(run->asr);
+    if (run->refiner && collector->text[0] != '\0') {
+        if (vi_refiner_submit(run->refiner, wave->samples, (size_t)wave->num_samples, collector->text) < 0) {
+            fprintf(stderr, "cannot submit final recognition (limit: 60 seconds)\n");
+            SherpaOnnxFreeWave(wave);
+            return -1;
+        }
+        struct vi_refine_result refined;
+        while (!vi_refiner_poll(run->refiner, &refined)) {
+            const struct timespec wait = { .tv_nsec = 1000000L };
+            nanosleep(&wait, NULL);
+        }
+        if (strlen(refined.text) >= sizeof(collector->text)) {
+            SherpaOnnxFreeWave(wave);
+            return -1;
+        }
+        snprintf(collector->text, sizeof(collector->text), "%s", refined.text);
+        collector->length = strlen(collector->text);
+        needs_punctuation = refined.fallback || strcmp(refined.backend, "sensevoice") != 0;
+    }
     latency->final_ms = ms_since(&speech_end);
     decode_ms += latency->final_ms;
     *decode_seconds = decode_ms / 1000.0;
@@ -295,7 +317,7 @@ static int score_clip(const struct run *run, const char *wav_path,
             ? collector->partial_span_ms / (double)(collector->partials - 1)
             : 0.0;
 
-    if (run->punctuation != NULL && collector->text[0] != '\0') {
+    if (needs_punctuation && run->punctuation != NULL && collector->text[0] != '\0') {
         char punctuated[TEXT_LENGTH];
         struct timespec before;
         clock_gettime(CLOCK_MONOTONIC, &before);
@@ -321,6 +343,7 @@ static void usage(void) {
             "  --max-active-paths N  beam width, default 4\n"
             "  --hotwords FILE     hotwords, modified_beam_search only\n"
             "  --hotwords-score N  hotword score, default 1.5\n"
+            "  --accurate         use the daemon final recognition worker\n"
             "  --adaptive-gain    apply the daemon's gain stage\n"
             "  --max-gain N       gain ceiling, default 8\n"
             "  --target-rms N     gain target, default 0.03\n"
@@ -347,6 +370,7 @@ int main(int argc, char **argv) {
     }
     const char *manifest_path = NULL;
     bool verbose = false;
+    bool accurate = false;
     bool realtime = true;
     bool adaptive_gain = false;
     float max_gain = 8.0F;
@@ -392,6 +416,8 @@ int main(int argc, char **argv) {
             adaptive_gain = true;
         } else if (strcmp(argv[i], "--float") == 0) {
             config.prefer_int8 = false;
+        } else if (strcmp(argv[i], "--accurate") == 0) {
+            accurate = true;
         } else if (strcmp(argv[i], "--fast") == 0) {
             realtime = false;
         } else if (strcmp(argv[i], "--verbose") == 0) {
@@ -452,7 +478,15 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
     }
-    const struct run run = { .asr = asr, .punctuation = punctuation,
+    struct vi_refiner *refiner = accurate ? vi_refiner_create(
+        getenv("VOICE_INPUT_PARAFORMER_DIR"), getenv("VOICE_INPUT_SENSEVOICE_DIR"), config.threads) : NULL;
+    if (accurate && !refiner) {
+        fprintf(stderr, "accurate mode requires VOICE_INPUT_PARAFORMER_DIR and VOICE_INPUT_SENSEVOICE_DIR\n");
+        vi_asr_destroy(asr); vi_punctuation_destroy(punctuation); fclose(manifest);
+        return EXIT_FAILURE;
+    }
+    printf("final mode   %s\n", refiner ? "accurate" : "streaming");
+    const struct run run = { .asr = asr, .refiner = refiner, .punctuation = punctuation,
                              .collector = &collector, .realtime = realtime,
                              .adaptive_gain = adaptive_gain,
                              .max_gain = max_gain, .target_rms = target_rms };
@@ -563,6 +597,7 @@ int main(int argc, char **argv) {
     fclose(manifest);
     vi_asr_destroy(asr);
     vi_punctuation_destroy(punctuation);
+    vi_refiner_destroy(refiner);
 
     if (clips == 0) {
         fprintf(stderr, "no clip was scored\n");

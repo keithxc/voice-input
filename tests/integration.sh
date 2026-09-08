@@ -30,6 +30,9 @@ grep -q '^asr: *disabled' <<<"$status"
 grep -q '^punctuation:' <<<"$status"
 "$ctl" --socket "$socket_path" start | grep -q '"recording":true'
 "$ctl" --socket "$socket_path" toggle | grep -q '"recording":false'
+"$ctl" --socket "$socket_path" start | grep -q '"recording":true'
+"$ctl" --socket "$socket_path" cancel | grep -q '"cancelled"'
+"$ctl" --socket "$socket_path" status | grep -q '^state: *idle'
 "$ctl" --socket "$socket_path" quit | grep -q '"stopping"'
 wait "$daemon_pid"
 daemon_pid=

@@ -239,6 +239,15 @@ Window {
                     }
                 }
 
+                Text {
+                    width: parent.width
+                    visible: overlayModel.hint.length > 0
+                    text: overlayModel.hint
+                    wrapMode: Text.Wrap
+                    color: overlayModel.processing ? root.secondaryText : root.dangerColor
+                    font.pixelSize: Math.round(root.unit * 0.66)
+                }
+
                 Item {
                     id: transcriptViewport
                     width: parent.width

@@ -48,6 +48,59 @@ private slots:
         QVERIFY(model.panelVisible());
     }
 
+    void repeatedStatePreservesTranscript() {
+        OverlayModel model;
+        model.processLine(R"({"event":"state","recording":true})");
+        model.processLine(R"({"event":"partial","text":"保留这句话"})");
+        model.processLine(R"({"event":"state","recording":true})");
+        QCOMPARE(model.text(), QStringLiteral("保留这句话"));
+        QCOMPARE(model.status(), QStringLiteral("正在识别…"));
+        model.processLine(R"({"event":"finishing"})");
+        QCOMPARE(model.status(), QStringLiteral("正在收尾…"));
+        model.processLine(R"({"event":"final","text":"保留这句话。"})");
+        model.processLine(R"({"event":"output-success"})");
+        QCOMPARE(model.status(), QStringLiteral("已输入，继续听…"));
+        QVERIFY(model.recording());
+    }
+
+    void processingCanCompleteOrCancel() {
+        OverlayModel model;
+        model.processLine(R"({"event":"state","recording":true})");
+        model.processLine(R"({"event":"partial","text":"draft"})");
+        model.processLine(R"({"event":"processing"})");
+        QVERIFY(model.processing());
+        QVERIFY(!model.recording());
+        QVERIFY(model.panelVisible());
+        QCOMPARE(model.status(), QStringLiteral("正在校对…"));
+        QCOMPARE(model.text(), QStringLiteral("draft"));
+        model.processLine(R"({"event":"final","text":"corrected"})");
+        model.processLine(R"({"event":"output-success"})");
+        model.processLine(R"({"event":"state","recording":false})");
+        QVERIFY(!model.processing());
+        QCOMPARE(model.status(), QStringLiteral("已输入"));
+        model.processLine(R"({"event":"state","recording":true})");
+        model.processLine(R"({"event":"processing"})");
+        model.processLine(R"({"event":"cancelled"})");
+        model.processLine(R"({"event":"state","recording":false})");
+        QVERIFY(!model.processing());
+        QVERIFY(model.text().isEmpty());
+        QCOMPARE(model.status(), QStringLiteral("已取消"));
+    }
+
+    void rawSignalFeedbackDoesNotReplaceTranscript() {
+        OverlayModel model;
+        model.processLine(R"({"event":"state","recording":true})");
+        model.processLine(R"({"event":"partial","text":"保留文字"})");
+        model.processLine(R"({"event":"level","rms":0.1,"raw_rms":0.1,"clipping":0.02})");
+        QVERIFY(model.hint().contains(QStringLiteral("过响")));
+        QCOMPARE(model.text(), QStringLiteral("保留文字"));
+        for (int i = 0; i < 25; ++i)
+            model.processLine(R"({"event":"level","rms":0.01,"raw_rms":0.001,"clipping":0})");
+        QVERIFY(model.hint().contains(QStringLiteral("偏小")));
+        model.processLine(R"({"event":"level","rms":0.03,"raw_rms":0.03,"clipping":0})");
+        QVERIFY(model.hint().isEmpty());
+    }
+
     void reportsOutputFailure() {
         OverlayModel model;
         model.processLine(R"({"event":"state","recording":true})");

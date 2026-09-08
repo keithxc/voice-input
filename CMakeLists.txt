@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(GNUInstallDirs)
 include(CTest)
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3>=0.3.65)
 find_path(SHERPA_ONNX_INCLUDE_DIR sherpa-onnx/c-api/c-api.h REQUIRED)
 find_library(SHERPA_ONNX_C_API sherpa-onnx-c-api REQUIRED)
@@ -30,10 +31,10 @@ target_compile_options(voice-input-common PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
 add_executable(voice-inputd src/daemon.c src/audio.c src/asr.c src/output.c
-  src/punctuation.c)
+  src/punctuation.c src/refine.c)
 target_include_directories(voice-inputd PRIVATE "${SHERPA_ONNX_INCLUDE_DIR}")
 target_link_libraries(voice-inputd PRIVATE voice-input-common PkgConfig::PIPEWIRE
-  "${SHERPA_ONNX_C_API}" m)
+  "${SHERPA_ONNX_C_API}" m Threads::Threads)
 target_compile_definitions(voice-inputd PRIVATE VOICE_INPUT_VERSION="${PROJECT_VERSION}")
 target_compile_options(voice-inputd PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
@@ -45,10 +46,10 @@ target_compile_options(voice-inputctl PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
 add_executable(voice-input-asr-bench tools/benchmark/asr_bench.c src/asr.c
-  src/audio.c src/punctuation.c)
+  src/audio.c src/punctuation.c src/refine.c)
 target_include_directories(voice-input-asr-bench PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")
 target_link_libraries(voice-input-asr-bench PRIVATE voice-input-common
-  "${SHERPA_ONNX_C_API}" PkgConfig::PIPEWIRE m)
+  "${SHERPA_ONNX_C_API}" PkgConfig::PIPEWIRE m Threads::Threads)
 target_compile_options(voice-input-asr-bench PRIVATE
   $<$<C_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion>)
 
@@ -78,6 +79,16 @@ install(FILES data/voice-inputd.service data/voice-input-overlay.service
 
 if(BUILD_TESTING)
   find_program(BASH_PROGRAM bash REQUIRED)
+  add_executable(refine-test tests/refine_test.c src/refine.c)
+  target_include_directories(refine-test PRIVATE src "${SHERPA_ONNX_INCLUDE_DIR}")
+  target_link_libraries(refine-test PRIVATE voice-input-common "${SHERPA_ONNX_C_API}" Threads::Threads m)
+  target_compile_options(refine-test PRIVATE -UNDEBUG)
+  add_test(NAME refine-policy COMMAND refine-test)
+  if(VOICE_INPUT_TEST_PARAFORMER_DIR AND VOICE_INPUT_TEST_SENSEVOICE_DIR AND VOICE_INPUT_TEST_MODEL_DIR)
+    add_test(NAME refine-worker COMMAND refine-test "${VOICE_INPUT_TEST_PARAFORMER_DIR}"
+      "${VOICE_INPUT_TEST_SENSEVOICE_DIR}" "${VOICE_INPUT_TEST_MODEL_DIR}/test_wavs/2.wav")
+    set_tests_properties(refine-worker PROPERTIES TIMEOUT 60)
+  endif()
   add_executable(protocol-test tests/protocol_test.c)
   target_link_libraries(protocol-test PRIVATE voice-input-common)
   add_test(NAME protocol COMMAND protocol-test)
@@ -100,6 +111,16 @@ if(BUILD_TESTING)
   target_link_libraries(audio-gain-test PRIVATE voice-input-common
     PkgConfig::PIPEWIRE m)
   add_test(NAME audio-gain COMMAND audio-gain-test)
+  add_executable(audio-preroll-test tests/audio_preroll_test.c)
+  target_link_libraries(audio-preroll-test PRIVATE voice-input-common PkgConfig::PIPEWIRE m)
+  add_test(NAME audio-preroll COMMAND audio-preroll-test)
+  add_executable(output-test tests/output_test.c src/output.c)
+  target_include_directories(output-test PRIVATE src)
+  add_test(NAME output COMMAND output-test)
+  set_tests_properties(output PROPERTIES TIMEOUT 5)
+  # These regression tests use assert, including when built by Nix in Release.
+  target_compile_options(audio-preroll-test PRIVATE -UNDEBUG)
+  target_compile_options(output-test PRIVATE -UNDEBUG)
   qt_add_executable(overlay-model-test
     tests/overlay_model_test.cpp
     overlay/overlay_model.cpp
