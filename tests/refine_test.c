@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "refine.h"
+#include "text.h"
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
@@ -18,6 +19,13 @@ static struct vi_refine_result wait_result(struct vi_refiner *r) {
 }
 
 int main(int argc, char **argv) {
+    assert(!strcmp(vi_text_without_hesitation("嗯，呃，检查 VIDIOC_DQBUF，不要修改 /opt/sdk/include。"),
+                   "检查 VIDIOC_DQBUF，不要修改 /opt/sdk/include。"));
+    assert(!strcmp(vi_text_without_hesitation("Um, check buffer, not 15 but 50 ms."),
+                   "check buffer, not 15 but 50 ms."));
+    const char *unchanged[] = {"", "u", "嗯。", "嗯，", "嗯，嗯。", "uh_value", "umount /mnt", "嗯嗯", "不是十五，是五十。", "重复，重复。"};
+    for (size_t i = 0; i < sizeof(unchanged) / sizeof(unchanged[0]); ++i)
+        assert(!strcmp(vi_text_without_hesitation(unchanged[i]), unchanged[i]));
     assert(vi_refine_english("Please check the buffer and return value"));
     assert(vi_refine_english("超过没 THE COMPUTERS DONT UNDERSTAND SOURCE CODE THEY ONLY"));
     assert(!vi_refine_english("检查这个 buffer 的大小然后调用函数"));
@@ -53,6 +61,26 @@ int main(int argc, char **argv) {
     assert(vi_refiner_submit(r, silence, 1600, "") == 0);
     result = wait_result(r);
     assert(result.text[0] == '\0');
+    if (getenv("VOICE_INPUT_VAD_MODEL") && getenv("VOICE_INPUT_EMPTY_DRAFT_RESCUE") &&
+        !strcmp(getenv("VOICE_INPUT_EMPTY_DRAFT_RESCUE"), "1")) {
+        /* Rescue real speech with no streaming draft, then ensure the VAD
+           cannot leak speech state into the next silent session. */
+        assert(vi_refiner_submit(r, wave->samples, (size_t)wave->num_samples, "") == 0);
+        result = wait_result(r);
+        assert(result.text[0] && !result.cancelled);
+        float noise[16000];
+        unsigned seed = 17;
+        for (size_t i = 0; i < 16000; ++i) {
+            seed = seed * 1664525U + 1013904223U;
+            noise[i] = ((float)(seed >> 16) / 65535.0F - 0.5F) * 0.04F;
+        }
+        assert(vi_refiner_submit(r, noise, 16000, "") == 0);
+        result = wait_result(r);
+        assert(!result.text[0]);
+        assert(vi_refiner_submit(r, silence, 1600, "") == 0);
+        result = wait_result(r);
+        assert(!result.text[0]);
+    }
     assert(vi_refiner_submit(r, wave->samples, VI_REFINE_MAX_SAMPLES + 1, "too long") == -1);
     vi_refiner_destroy(r);
     SherpaOnnxFreeWave(wave);

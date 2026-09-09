@@ -16,6 +16,7 @@
 #include "punctuation.h"
 #include "score.h"
 #include "refine.h"
+#include "text.h"
 
 #include <sherpa-onnx/c-api/c-api.h>
 #include <stdbool.h>
@@ -283,7 +284,7 @@ static int score_clip(const struct run *run, const char *wav_path,
     clock_gettime(CLOCK_MONOTONIC, &speech_end);
     bool needs_punctuation = true;
     vi_asr_finish(run->asr);
-    if (run->refiner && collector->text[0] != '\0') {
+    if (run->refiner) {
         if (vi_refiner_submit(run->refiner, wave->samples, (size_t)wave->num_samples, collector->text) < 0) {
             fprintf(stderr, "cannot submit final recognition (limit: 60 seconds)\n");
             SherpaOnnxFreeWave(wave);
@@ -328,6 +329,13 @@ static int score_clip(const struct run *run, const char *wav_path,
             memcpy(collector->text, punctuated, sizeof(collector->text));
         }
     }
+    const char *cleanup = getenv("VOICE_INPUT_CLEANUP");
+    if (!cleanup || strcmp(cleanup, "0") != 0) {
+        const char *cleaned = vi_text_without_hesitation(collector->text);
+        if (cleaned != collector->text)
+            memmove(collector->text, cleaned, strlen(cleaned) + 1);
+    }
+    collector->length = strlen(collector->text);
     SherpaOnnxFreeWave(wave);
     return status;
 }

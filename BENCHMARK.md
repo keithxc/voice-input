@@ -309,3 +309,36 @@ isolated fake Fcitx5 peer avoided writing test text into user applications.
 The acoustic cancellation test responded to status in **9.8 ms** during
 refinement, emitted no text after cancellation, and successfully committed
 the following recording. CTest includes worker reuse and cancellation tests.
+
+
+## 2026-09-09 v0.1.2 deployment checks
+
+Actual built-in speaker → AB13X USB microphone testing used seven public clips
+(three Chinese, one English, three mixed) before and after the change, at the
+same playback setting. These are different physical captures, not paired
+accuracy measurements. No clip committed text before stop.
+
+| Capture | Stop-to-idle median | Maximum |
+| --- | --- | --- |
+| v0.1.1 baseline | 662 ms | 1702 ms |
+| v0.1.2 candidate | 666 ms | 1855 ms |
+
+Timings include the 250 ms tail and an isolated fake Fcitx5 ACK, not focused
+application rendering. The three mixed clips still have obvious recognition
+errors and no independent reference. This small sample does not establish a
+two-second P95 for personal dictation. Four seconds of room-microphone silence
+produced no text. Cancelling an English clip produced no late commit; status
+responded in 6.9 ms, and the following mixed clip committed normally.
+
+An additional replay of ten identical saved waveforms tested the proposed
+VAD-gated empty-draft rescue. Three weak Chinese recordings previously emitted
+nothing; the candidate emitted a punctuation-only result and two incorrect
+short phrases. **Rescue is therefore experimental and off by default**;
+`VOICE_INPUT_EMPTY_DRAFT_RESCUE=1` is required. Passing VAD is not evidence that
+the recognizer recovered the words. Default cleanup only removes explicit
+comma-delimited hesitation prefixes; it does not rewrite numbers or content.
+
+The Nix build runs all 14 CTest checks, including experimental rescue on a
+speech fixture, silence/noise rejection, worker reuse and cancellation, and
+cleanup preservation of numbers, negation, paths and identifiers. Recordings
+and full transcripts remain outside the public repository.

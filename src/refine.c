@@ -15,6 +15,7 @@
 struct vi_refiner {
     const SherpaOnnxOfflineRecognizer *paraformer;
     const SherpaOnnxOfflineRecognizer *sensevoice;
+    const SherpaOnnxVoiceActivityDetector *vad;
     pthread_t thread;
     pthread_mutex_t mutex;
     pthread_cond_t wake;
@@ -99,6 +100,23 @@ static long clock_ms(void) {
     return now.tv_sec * 1000L + now.tv_nsec / 1000000L;
 }
 
+/* An empty streaming draft is not proof of silence. Only rescue it when a
+   separate speech detector finds speech; never run a generative recognizer
+   unconditionally on silence/noise. All VAD state belongs to the worker. */
+static bool detect_speech(struct vi_refiner *r) {
+    if (!r->vad) return false;
+    SherpaOnnxVoiceActivityDetectorReset(r->vad);
+    for (size_t i = 0; i < r->count; i += 512) {
+        float block[512] = {0};
+        const size_t n = r->count - i < 512 ? r->count - i : 512;
+        memcpy(block, r->samples + i, n * sizeof(float));
+        SherpaOnnxVoiceActivityDetectorAcceptWaveform(r->vad, block, 512);
+        if (!SherpaOnnxVoiceActivityDetectorEmpty(r->vad)) return true;
+    }
+    SherpaOnnxVoiceActivityDetectorFlush(r->vad);
+    return !SherpaOnnxVoiceActivityDetectorEmpty(r->vad);
+}
+
 static const SherpaOnnxOfflineRecognizer *load_model(const char *directory,
                                                      bool sense, int threads) {
     if (directory == NULL || !*directory) return NULL;
@@ -140,7 +158,8 @@ static void *worker(void *userdata) {
         const SherpaOnnxOfflineRecognizer *recognizer = english ? r->sensevoice : r->paraformer;
         snprintf(result.backend, sizeof(result.backend), "%s", english ? "sensevoice" : "paraformer-zh-en");
         (void)vi_refine_normalize(r->samples, r->count);
-        const SherpaOnnxOfflineStream *stream = r->draft[0] ? SherpaOnnxCreateOfflineStream(recognizer) : NULL;
+        const bool speech = r->draft[0] || detect_speech(r);
+        const SherpaOnnxOfflineStream *stream = speech ? SherpaOnnxCreateOfflineStream(recognizer) : NULL;
         if (stream != NULL) {
             SherpaOnnxAcceptWaveformOffline(stream, 16000, r->samples, (int32_t)r->count);
             SherpaOnnxDecodeOfflineStream(recognizer, stream);
@@ -174,6 +193,23 @@ struct vi_refiner *vi_refiner_create(const char *paraformer, const char *sensevo
     r->paraformer = load_model(paraformer, false, threads);
     r->sensevoice = load_model(sensevoice, true, threads);
     if (!r->paraformer || !r->sensevoice) goto fail;
+    const char *vad_path = getenv("VOICE_INPUT_VAD_MODEL");
+    const char *rescue = getenv("VOICE_INPUT_EMPTY_DRAFT_RESCUE");
+    if (rescue && !strcmp(rescue, "1") && vad_path && *vad_path && access(vad_path, R_OK) == 0) {
+        SherpaOnnxVadModelConfig c = {0};
+        c.silero_vad.model = vad_path;
+        c.silero_vad.threshold = 0.5F;
+        c.silero_vad.min_speech_duration = 0.25F;
+        c.silero_vad.min_silence_duration = 0.1F;
+        c.silero_vad.max_speech_duration = 60.0F;
+        c.silero_vad.window_size = 512;
+        c.sample_rate = 16000;
+        c.num_threads = 1;
+        c.provider = "cpu";
+        r->vad = SherpaOnnxCreateVoiceActivityDetector(&c, 61.0F);
+    }
+    fprintf(stderr, "voice-inputd: empty-draft speech rescue: %s\n",
+            r->vad ? "enabled (experimental)" : "disabled");
     if (pthread_mutex_init(&r->mutex, NULL) != 0) goto fail;
     if (pthread_cond_init(&r->wake, NULL) != 0) { pthread_mutex_destroy(&r->mutex); goto fail; }
     if (pthread_create(&r->thread, NULL, worker, r) != 0) {
@@ -181,6 +217,7 @@ struct vi_refiner *vi_refiner_create(const char *paraformer, const char *sensevo
     }
     return r;
 fail:
+    if (r->vad) SherpaOnnxDestroyVoiceActivityDetector(r->vad);
     if (r->paraformer) SherpaOnnxDestroyOfflineRecognizer(r->paraformer);
     if (r->sensevoice) SherpaOnnxDestroyOfflineRecognizer(r->sensevoice);
     free(r);
@@ -227,6 +264,7 @@ void vi_refiner_destroy(struct vi_refiner *r) {
     pthread_cond_signal(&r->wake);
     pthread_mutex_unlock(&r->mutex);
     pthread_join(r->thread, NULL);
+    if (r->vad) SherpaOnnxDestroyVoiceActivityDetector(r->vad);
     free(r->samples);
     pthread_cond_destroy(&r->wake);
     pthread_mutex_destroy(&r->mutex);

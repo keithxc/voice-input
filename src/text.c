@@ -1,4 +1,27 @@
 #include "text.h"
+#include <ctype.h>
+#include <string.h>
+
+const char *vi_text_without_hesitation(const char *text) {
+    const char *p = text;
+    for (;;) {
+        const char *q = p;
+        if (!strncmp(q, "嗯", 3) || !strncmp(q, "呃", 3)) q += 3;
+        else if (tolower((unsigned char)q[0]) == 'u' &&
+                 (tolower((unsigned char)q[1]) == 'm' ||
+                  tolower((unsigned char)q[1]) == 'h')) q += 2;
+        else break;
+        if (*q == ',') ++q;
+        else if (!strncmp(q, "，", 3)) q += 3;
+        else break;
+        while (*q == ' ' || *q == '\t') ++q;
+        if (!*q) return text;
+        p = q;
+    }
+    /* Do not reduce "嗯，嗯。" to a different acknowledgment. */
+    if (!strncmp(p, "嗯", 3) || !strncmp(p, "呃", 3)) return text;
+    return p;
+}
 
 size_t vi_utf8_decode(const char *text, uint32_t *codepoint) {
     const unsigned char *bytes = (const unsigned char *)text;

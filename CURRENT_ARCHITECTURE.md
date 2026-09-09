@@ -1,6 +1,6 @@
 # Current architecture
 
-Updated 2026-09-08. The Nix package pins sherpa-onnx 1.13.3, streaming bilingual
+Updated 2026-09-09. The Nix package pins sherpa-onnx 1.13.3, streaming bilingual
 Zipformer, offline SenseVoice INT8, offline bilingual Paraformer INT8 and
 ct-transformer punctuation. Models load once at daemon startup; inference and
 audio remain local.
@@ -54,3 +54,14 @@ protocol, overlay behavior and QML rendering. BENCHMARK.md records referenced
 Chinese/English and unscored mixed acoustic samples. Mixed technical terms,
 very weak speech and personal dictation remain accuracy risks; the small public
 corpus is not evidence of universal accuracy.
+
+## v0.1.2 speech rescue and cleanup
+
+Empty drafts now reach the final worker. With the experimental
+`VOICE_INPUT_EMPTY_DRAFT_RESCUE=1` opt-in, a pinned Silero VAD checks these
+sessions after uniform gain normalization; only speech-positive audio reaches
+SenseVoice. The detector resets between sessions; missing VAD disables this
+rescue. It is off by default after weak acoustic recordings produced incorrect
+text despite passing VAD. Nonempty drafts retain the existing routing and Latin-word fallback.
+Final output conservatively drops comma-delimited hesitation prefixes without
+rewriting the remaining content. No LLM cleanup backend is enabled.

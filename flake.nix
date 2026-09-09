@@ -8,6 +8,10 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       version = builtins.head (pkgs.lib.splitString "\n" (builtins.readFile ./VERSION));
+      vadModel = pkgs.fetchurl {
+        url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
+        sha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6";
+      };
       modelArchive = pkgs.fetchurl {
         url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2";
         hash = "sha256-J/+9nuJK0YbZmswvY1TXmSsnvKtJCBJRBmX6j5OJxfg=";
@@ -80,6 +84,7 @@
         punctuation-model = punctuationModel;
         paraformer-model = paraformerModel;
         sensevoice-model = sensevoiceModel;
+        vad-model = vadModel;
         default = pkgs.stdenv.mkDerivation {
           pname = "voice-input";
           inherit version;
@@ -102,6 +107,8 @@
             qt6.qtdeclarative
           ];
           doCheck = true;
+          VOICE_INPUT_VAD_MODEL = vadModel;
+          VOICE_INPUT_EMPTY_DRAFT_RESCUE = "1";
           cmakeFlags = [
             "-DVOICE_INPUT_TEST_MODEL_DIR=${streamingModel}"
             "-DVOICE_INPUT_TEST_PARAFORMER_DIR=${paraformerModel}"
@@ -121,7 +128,8 @@
                 --set-default VOICE_INPUT_MODEL_DIR ${streamingModel} \
                 --set-default VOICE_INPUT_PUNCT_MODEL_DIR ${punctuationModel} \
                 --set-default VOICE_INPUT_PARAFORMER_DIR ${paraformerModel} \
-                --set-default VOICE_INPUT_SENSEVOICE_DIR ${sensevoiceModel}
+                --set-default VOICE_INPUT_SENSEVOICE_DIR ${sensevoiceModel} \
+                --set-default VOICE_INPUT_VAD_MODEL ${vadModel}
             done
             '';
         };

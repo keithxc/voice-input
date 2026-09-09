@@ -80,6 +80,23 @@ The overlay shows “正在收尾…” during the tail, then “正在校对…
 final worker runs. Accurate mode commits once after stopping. Status queries preserve the current
 transcript. A stalled output connection times out instead of hanging forever.
 
+## Conservative final cleanup
+
+Final text removes only comma-delimited hesitation prefixes such as `嗯，`,
+`呃，`, `Um,` and `Uh,` when followed by content. The remaining text is kept
+byte-for-byte: numbers, negation, paths, repeated content and mid-sentence
+corrections are not rewritten. Standalone acknowledgments are retained.
+Set `VOICE_INPUT_CLEANUP=0` to disable this step. It uses no language model or
+network request.
+
+Empty-draft recognition is experimental and **off by default**. Set
+`VOICE_INPUT_EMPTY_DRAFT_RESCUE=1` to try it: a local Silero VAD gates
+whole-utterance SenseVoice recognition. The detector runs on the final worker,
+so cancellation and status stay responsive. `VOICE_INPUT_VAD_MODEL` selects
+the ONNX file; the Nix package pins it automatically. Missing VAD disables
+rescue. Saved weak acoustic recordings still produced incorrect text after
+passing VAD, so speech detection is insufficient to enable this by default.
+
 ## Accuracy mode
 
 The packaged default is `VOICE_INPUT_FINAL_MODE=accurate`: streaming Zipformer

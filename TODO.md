@@ -25,3 +25,10 @@ Next action: the referenced personal technical corpus. Checkpoint: measured
 improvement over streaming with no dropped known English terms, and explicit
 reporting of remaining errors. Keep recordings and private vocabulary outside
 Git. This is not a blocker for using the measured public-corpus improvements.
+
+2026-09-09: v0.1.2 adds experimental, default-off VAD-gated empty-draft recognition and conservative
+prefix cleanup. Next: independently referenced technical code-switching audio,
+including numeric self-corrections and negation. Evaluate stop-to-commit P50/P95
+against a two-second target; model-only timings are not sufficient. General
+LLM rewrite candidates remain excluded from automatic commit after observed
+number changes and translation. Keep personal recordings outside Git.

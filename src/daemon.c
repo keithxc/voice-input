@@ -6,6 +6,7 @@
 #include "output.h"
 #include "punctuation.h"
 #include "refine.h"
+#include "text.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -247,14 +248,14 @@ static void finish_recording(struct app *app) {
     app->tail_until_ms = 0L;
     debug_wav_close(app);
     timing_log("recording finished");
-    if (app->refiner && app->session_samples > 0 && app->draft[0]) {
+    if (app->refiner && app->session_samples > 0) {
         if (vi_refiner_submit(app->refiner, app->session_audio, app->session_samples, app->draft) == 0) {
             app->refining = true;
             broadcast(app, "{\"event\":\"processing\"}\n");
             return;
         }
         /* A busy/cancelled worker or allocation failure must not lose speech. */
-        commit_transcript(app, app->draft, true);
+        if (app->draft[0]) commit_transcript(app, app->draft, true);
     }
     broadcast_state(app, "state");
 }
@@ -490,6 +491,11 @@ static void commit_transcript(struct app *app, const char *text, bool punctuate)
             timing_log("punctuated in %ld ms: %s", monotonic_ms() - before,
                        final_text);
         }
+    }
+    const char *cleanup = getenv("VOICE_INPUT_CLEANUP");
+    if (!cleanup || strcmp(cleanup, "0") != 0) {
+        const char *cleaned = vi_text_without_hesitation(final_text);
+        if (cleaned != final_text) memmove(final_text, cleaned, strlen(cleaned) + 1);
     }
     char message[VI_REFINE_TEXT_SIZE * 2];
     if (vi_json_text(message, sizeof(message), "final", final_text) >= 0) {
